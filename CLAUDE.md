@@ -1,176 +1,95 @@
-# Instructions for Claude
+# CLAUDE.md
 
-This file contains important context and reminders for Claude Code sessions working on this project.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
----
+## Build & Run Commands
 
-## Technical Documentation
-
-**IMPORTANT**: This project maintains a technical log at `/TECHNICAL_LOG.md` that documents all technical decisions, challenges, and solutions.
-
-### When to Update TECHNICAL_LOG.md
-
-You MUST update the technical log when:
-
-1. **Making architectural decisions**
-   - Choosing between technology options (e.g., libraries, frameworks, patterns)
-   - Deciding on project structure or file organization
-   - Selecting approaches for implementation
-
-2. **Solving technical challenges**
-   - Encountering and fixing errors or bugs
-   - Debugging API issues or integration problems
-   - Working around limitations or incompatibilities
-
-3. **Changing implementation approaches**
-   - Switching from one library to another
-   - Changing file formats, data structures, or APIs
-   - Refactoring significant portions of code
-
-4. **Adding new features**
-   - Integrating new services or providers
-   - Implementing new CLI commands or options
-   - Adding new output formats or capabilities
-
-5. **Performance optimizations**
-   - Adding caching mechanisms
-   - Improving execution speed
-   - Reducing resource usage
-
-### How to Update TECHNICAL_LOG.md
-
-Use this format for new entries:
-
-```markdown
-### Challenge X: [Brief Title]
-**Problem**: [Description of the issue]
-
-**Root Cause**: [Why it happened]
-
-**Solution**: [How it was solved]
-[code example if relevant]
-
-**Learning**: [Key takeaway]
-
----
-```
-
-For architectural decisions:
-
-```markdown
-### X. [Decision Topic]
-**Decision**: [What was chosen]
-
-**Rationale**:
-- [Reason 1]
-- [Reason 2]
-- [Reason 3]
-
-**Alternatives Considered**:
-- ❌ [Option 1]: [Why rejected]
-- ❌ [Option 2]: [Why rejected]
-- ✅ [Chosen option]: [Why chosen]
-```
-
-### Updating Existing Entries
-
-- Add updates to the relevant section (don't create duplicates)
-- Add timestamps for significant changes
-- Keep the narrative chronological
-
----
-
-## Project Context
-
-### Tech Stack
-- **Runtime**: Bun (JavaScript/TypeScript runtime)
-- **CLI Framework**: Clack (@clack/prompts)
-- **YouTube Download**: ytdlp-nodejs
-- **Transcription**: AssemblyAI SDK + OpenAI API
-- **Testing**: bun:test
-- **Monorepo**: Bun workspaces
-
-### Project Structure
-```
-neuca-chatbot/
-├── apps/
-│   ├── cli/          # Current: YouTube transcription CLI
-│   ├── api/          # Future: Backend API
-│   └── web/          # Future: Web interface
-├── packages/         # Future: Shared packages
-├── TECHNICAL_LOG.md  # ⭐ Technical decisions and challenges
-└── CLAUDE.md         # This file
-```
-
-### Key Files
-- `apps/cli/src/index.ts` - CLI entry point with Clack prompts
-- `apps/cli/src/commands/transcribe.ts` - Main transcription workflow
-- `apps/cli/src/services/youtube.ts` - yt-dlp integration
-- `apps/cli/src/services/transcription.ts` - AssemblyAI integration
-- `apps/cli/src/services/transcription-openai.ts` - OpenAI integration
-- `apps/cli/src/utils/ascii-art.ts` - ASCII art rendering
-- `apps/cli/src/utils/format.ts` - Transcript formatting utilities
-
----
-
-## Common Tasks
-
-### Running the CLI
 ```bash
+# Run the CLI
 bun run cli
-```
 
-### Running Tests
-```bash
+# Run all tests
 bun test
-```
 
-### Type Checking
-```bash
+# Run a single test file
+bun test apps/cli/tests/format.test.ts
+
+# Type check
 bun run --cwd apps/cli tsc --noEmit
 ```
 
----
+## Architecture
 
-## Known Issues & Considerations
+This is a **YouTube transcription CLI** built with Bun workspaces monorepo structure.
 
-1. **OpenAI Audio Format**: Still investigating 400 errors. Current approach uses MP3 format with detailed error logging.
-
-2. **Environment Variables**: Uses symlink from `apps/cli/.env` to root `.env` because `bun run --cwd` changes working directory.
-
-3. **Cache Location**: Audio files cached in `temp/` directory with video ID as filename. Can grow large - may need cleanup mechanism.
-
-4. **Speaker Labels**: Both AssemblyAI and OpenAI use different formats for speaker identification. Our code normalizes to "Speaker A", "Speaker B", etc.
-
----
-
-## Coding Conventions
-
-1. **Error Handling**: Always use try-catch blocks for async operations with informative error messages
-2. **Types**: Use TypeScript strict mode, define interfaces in `types.ts`
-3. **Testing**: Write unit tests for utility functions, especially formatters and parsers
-4. **Git Commits**: Use conventional commits format with co-author attribution
-5. **Comments**: Add comments for complex logic, API quirks, or non-obvious decisions
-
----
-
-## Environment Variables Required
-
-```bash
-ASSEMBLYAI_API_KEY=your_api_key_here  # For AssemblyAI transcription
-OPENAI_API_KEY=your_api_key_here      # For OpenAI transcription
+### Data Flow
+```
+YouTube URL → yt-dlp (download audio) → Whisper/AssemblyAI (transcribe) → Speaker ID (diarization) → Output file
 ```
 
----
+### Key Components
 
-## Remember
+**CLI Entry** (`apps/cli/src/index.ts`)
+- Clack-based interactive prompts
+- Main menu: Transcribe, Identify Speakers
 
-- Update TECHNICAL_LOG.md when making significant technical decisions or solving challenges
-- Keep documentation in sync with code changes
-- Test thoroughly before committing (type check + unit tests)
-- Maintain backwards compatibility when possible
-- Prioritize user experience (timing counters, clear error messages, progress indicators)
+**Transcription Pipeline** (`apps/cli/src/commands/transcribe.ts`)
+- Orchestrates: URL validation → audio download → provider selection → transcription → output
 
----
+**Transcription Providers** (`apps/cli/src/services/`)
+- `transcription.ts` - AssemblyAI (cloud API with built-in diarization)
+- `transcription-whisper.ts` - Local Whisper via Python (mlx-whisper on Apple Silicon, openai-whisper elsewhere)
+- `transcription-openai.ts` - OpenAI API (currently has issues, see TECHNICAL_LOG.md)
 
-*This file helps maintain context across Claude Code sessions. Update it when project structure or conventions change.*
+**Speaker Identification** (`apps/cli/src/commands/identify-speakers.ts`)
+- Post-transcription tool to name speakers by listening to audio samples
+- Uses `speaker-analyzer.ts` for segment analysis and `audio-playback.ts` for ffmpeg/afplay
+
+**YouTube Service** (`apps/cli/src/services/youtube.ts`)
+- yt-dlp wrapper with automatic binary management
+- Caches audio in `temp/{videoId}.mp3`
+
+### File Locations
+- Audio cache: `temp/`
+- Transcripts: `output/transcript-{videoId}-{timestamp}.txt`
+- Whisper venv: `.venv-whisper/`
+
+## Documentation Requirements
+
+**TECHNICAL_LOG.md** - Update when:
+- Making architectural decisions or choosing between libraries
+- Solving technical challenges or debugging API issues
+- Changing implementation approaches
+- Adding new features or providers
+
+Use the entry format documented in TECHNICAL_LOG.md.
+
+**README.md** - Update when:
+- Adding new CLI commands or options
+- Changing installation steps or dependencies
+- Modifying the output format
+
+## Environment Variables
+
+```bash
+# Required for cloud transcription
+ASSEMBLYAI_API_KEY=...
+OPENAI_API_KEY=...
+
+# Required for local Whisper with speaker diarization
+HF_TOKEN=...  # Hugging Face token for pyannote models
+```
+
+Environment files: Root `.env` symlinked to `apps/cli/.env` (Bun's `--cwd` changes working directory).
+
+## Known Issues
+
+1. **OpenAI Audio API**: Persistent "corrupted audio" errors - use AssemblyAI or local Whisper instead
+2. **PyTorch MPS**: NaN values on Apple Silicon - solved by using mlx-whisper instead of openai-whisper
+3. **Audio playback**: macOS only (uses `afplay`)
+
+## Conventions
+
+- Interfaces defined in `apps/cli/src/types.ts`
+- Conventional commits with co-author: `Co-Authored-By: Claude <noreply@anthropic.com>`
+- Tests use `bun:test` framework
