@@ -573,6 +573,92 @@ for segment in result["segments"]:
 
 ---
 
+### Challenge 14: Speaker Identification Tool
+**Problem**: After transcription, speakers are labeled generically as "Speaker A", "Speaker B", etc. Users need a way to identify and name speakers by listening to audio samples.
+
+**Requirements**:
+- Parse existing transcript files to extract speaker information
+- Play audio samples for each speaker using the cached audio file
+- Allow users to assign names to speakers
+- Save updated transcript with `-identified.txt` suffix
+
+**Solution**: Implemented an interactive CLI tool with the following components:
+
+1. **Speaker Analyzer** (`speaker-analyzer.ts`):
+   - Analyzes transcript segments to identify unique speakers
+   - Calculates speaking time and segment count per speaker
+   - Selects representative audio samples (5-15 seconds, from different parts of recording)
+
+2. **Audio Playback** (`audio-playback.ts`):
+   - Extracts audio segments using ffmpeg
+   - Plays segments using afplay (macOS native)
+   - Manages temp files and cleanup
+
+3. **Transcript I/O** (`transcript-io.ts`):
+   - Parses transcript files to extract video info and segments
+   - Replaces speaker names based on user mappings
+   - Writes updated transcript files
+
+4. **Identify Speakers Command** (`identify-speakers.ts`):
+   - Interactive Clack-based CLI flow
+   - Shows speaker statistics before identification
+   - For each speaker: play samples, replay, navigate, enter name, skip
+   - Confirms and saves changes
+
+**User Flow**:
+```
+1. Select "Identify speakers" from main menu (or prompted after transcription)
+2. Choose transcript file from list
+3. For each speaker:
+   - View segment count and total speaking time
+   - Listen to 1-3 audio samples
+   - Enter name, skip, or navigate samples
+4. Confirm and save to transcript-{id}-{timestamp}-identified.txt
+```
+
+**Key Implementation Details**:
+```typescript
+// Sample selection algorithm
+const samples = segments
+  .filter(s => s.duration >= 5000)  // At least 5 seconds
+  .sort((a, b) => {
+    // Prefer 5-15 second segments
+    const aInRange = a.duration >= 5000 && a.duration <= 15000;
+    const bInRange = b.duration >= 5000 && b.duration <= 15000;
+    if (aInRange && !bInRange) return -1;
+    if (!aInRange && bInRange) return 1;
+    return a.duration - b.duration;
+  });
+
+// Select from beginning, middle, end of timeline
+indices.push(0, Math.floor(totalSegments / 2), totalSegments - 1);
+```
+
+**Audio Extraction**:
+```bash
+ffmpeg -y -i input.mp3 -ss 00:01:30.000 -to 00:01:45.000 -c copy segment.mp3
+afplay segment.mp3
+```
+
+**File Locations**:
+- Transcripts: `output/transcript-{videoId}-{timestamp}.txt`
+- Identified: `output/transcript-{videoId}-{timestamp}-identified.txt`
+- Audio cache: `temp/{videoId}.mp3`
+- Temp segments: `temp/segments/` (cleaned up after use)
+
+**Trade-offs**:
+- macOS only (uses afplay for playback)
+- Requires ffmpeg installed
+- Audio must be cached locally (not re-downloaded)
+
+**Learning**:
+- Clack prompts work well for multi-step interactive flows
+- ffmpeg `-c copy` is fast for extracting segments (no re-encoding)
+- Temp file cleanup is important for long-running sessions
+- Sample selection from different parts of recording helps identify speakers who may sound different at start vs end
+
+---
+
 ## Performance Optimizations
 
 ### 1. Timing Counters
@@ -774,14 +860,14 @@ opportunity in the AI space...
 
 ## Project Statistics
 
-- **Total Files Created**: 18 files
-- **Lines of Code**: ~800 (src) + ~300 (tests)
+- **Total Files Created**: 22 files
+- **Lines of Code**: ~1100 (src) + ~300 (tests)
 - **Test Coverage**: 36 tests, 100% of utility functions
 - **Dependencies**: 8 (runtime) + 2 (dev)
 - **Supported Languages**: 6 + auto-detect
-- **Supported Providers**: 2 (AssemblyAI, OpenAI)
-- **Development Time**: ~3 hours (initial implementation) + ~2 hours (refinements)
+- **Supported Providers**: 2 (AssemblyAI, Whisper local)
+- **Features**: Transcription, Speaker Identification
 
 ---
 
-*Last Updated: 2026-01-22*
+*Last Updated: 2026-01-23*

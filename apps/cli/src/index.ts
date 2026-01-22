@@ -1,9 +1,10 @@
-import { intro, outro, text, select, isCancel, cancel } from '@clack/prompts';
+import { intro, outro, text, select, confirm, isCancel, cancel, log } from '@clack/prompts';
 import pc from 'picocolors';
 
 import { displayAsciiArt } from './utils/ascii-art.js';
 import { isValidYouTubeUrl } from './utils/format.js';
 import { transcribeCommand } from './commands/transcribe.js';
+import { identifySpeakersCommand } from './commands/identify-speakers.js';
 
 async function main() {
   // Display ASCII art logo
@@ -12,6 +13,40 @@ async function main() {
   // Show intro
   intro(pc.cyan('NEUCA Chatbot CLI'));
 
+  // Main menu selection
+  const action = await select({
+    message: 'What would you like to do?',
+    options: [
+      { value: 'transcribe', label: 'Transcribe a YouTube video' },
+      { value: 'identify', label: 'Identify speakers in existing transcript' },
+    ],
+  });
+
+  // Handle cancellation
+  if (isCancel(action)) {
+    cancel('Operation cancelled');
+    process.exit(0);
+  }
+
+  // Handle speaker identification
+  if (action === 'identify') {
+    try {
+      const outputPath = await identifySpeakersCommand();
+      if (outputPath) {
+        outro(pc.green(`Identified transcript saved to: ${outputPath}`));
+      } else {
+        outro(pc.yellow('No changes saved'));
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      cancel(pc.red(`Error: ${errorMessage}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Continue with transcription flow
   // Get transcription model selection
   const model = await select({
     message: 'Select transcription model:',
@@ -84,8 +119,23 @@ async function main() {
       language as string | undefined
     );
 
-    // Show success message
-    outro(pc.green(`Transcript saved to: ${outputPath}`));
+    log.success(pc.green(`Transcript saved to: ${outputPath}`));
+
+    // Ask if user wants to identify speakers
+    const shouldIdentify = await confirm({
+      message: 'Would you like to identify speakers in this transcript?',
+    });
+
+    if (!isCancel(shouldIdentify) && shouldIdentify) {
+      const identifiedPath = await identifySpeakersCommand(outputPath);
+      if (identifiedPath) {
+        outro(pc.green(`Identified transcript saved to: ${identifiedPath}`));
+      } else {
+        outro(pc.yellow('Speaker identification completed (no changes saved)'));
+      }
+    } else {
+      outro(pc.green('Done!'));
+    }
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error';
