@@ -20,6 +20,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
+ * Format elapsed time in seconds to readable string
+ */
+function formatElapsedTime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+/**
  * Execute the full transcription workflow
  */
 export async function transcribeCommand(
@@ -28,12 +41,14 @@ export async function transcribeCommand(
   language?: string
 ): Promise<string> {
   const s = spinner();
+  let startTime: number;
 
   // Ensure yt-dlp is installed
   s.start('Checking yt-dlp installation...');
+  startTime = Date.now();
   try {
     await ensureYtDlpInstalled();
-    s.stop('yt-dlp ready');
+    s.stop(`yt-dlp ready (${formatElapsedTime(Date.now() - startTime)})`);
   } catch (error) {
     s.stop('Failed to setup yt-dlp');
     throw error;
@@ -41,10 +56,11 @@ export async function transcribeCommand(
 
   // Get video information
   s.start('Fetching video information...');
+  startTime = Date.now();
   let videoInfo;
   try {
     videoInfo = await getVideoInfo(url);
-    s.stop(`Video: ${videoInfo.title}`);
+    s.stop(`Video: ${videoInfo.title} (${formatElapsedTime(Date.now() - startTime)})`);
   } catch (error) {
     s.stop('Failed to fetch video information');
     throw error;
@@ -59,17 +75,20 @@ export async function transcribeCommand(
   // Download audio (or use cached)
   const audioPath = join(tempDir, `${videoInfo.id}`);
   s.start('Checking for cached audio...');
+  startTime = Date.now();
   let audioFilePath: string;
   let wasCached: boolean;
   try {
     const result = await downloadAudio(url, audioPath);
     audioFilePath = result.audioPath;
     wasCached = result.wasCached;
+    const elapsed = formatElapsedTime(Date.now() - startTime);
     if (wasCached) {
-      s.stop('Using cached audio');
+      s.stop(`Using cached audio (${elapsed})`);
     } else {
-      s.stop('Audio downloaded');
+      s.stop(`Audio downloaded (${elapsed})`);
     }
+    console.log(`Audio file saved at: ${audioFilePath}`);
   } catch (error) {
     s.stop('Failed to download audio');
     throw error;
@@ -79,6 +98,7 @@ export async function transcribeCommand(
   const langMsg = language ? ` (language: ${language})` : ' (auto-detect)';
   const modelName = model === 'assemblyai' ? 'AssemblyAI' : 'OpenAI gpt-4o-transcribe-diarize';
   s.start(`Transcribing audio with ${modelName}${langMsg} - this may take a while...`);
+  startTime = Date.now();
   let transcriptionResult;
   try {
     if (model === 'openai') {
@@ -86,7 +106,8 @@ export async function transcribeCommand(
     } else {
       transcriptionResult = await transcribeAudio(audioFilePath, language);
     }
-    s.stop(`Transcription complete (${transcriptionResult.segments.length} segments)`);
+    const elapsed = formatElapsedTime(Date.now() - startTime);
+    s.stop(`Transcription complete (${transcriptionResult.segments.length} segments, ${elapsed})`);
   } catch (error) {
     s.stop('Failed to transcribe audio');
     throw error;

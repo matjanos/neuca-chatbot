@@ -70,21 +70,21 @@ export async function downloadAudio(
   url: string,
   outputPath: string
 ): Promise<{ audioPath: string; wasCached: boolean }> {
-  // Use WAV format for better compatibility with both AssemblyAI and OpenAI
-  const wavPath = outputPath.endsWith('.wav') ? outputPath : `${outputPath}.wav`;
+  // Use MP3 format for better compatibility with OpenAI
+  const mp3Path = outputPath.endsWith('.mp3') ? outputPath : `${outputPath}.mp3`;
 
   // Check if file already exists (cached)
-  if (existsSync(wavPath)) {
-    return { audioPath: wavPath, wasCached: true };
+  if (existsSync(mp3Path)) {
+    return { audioPath: mp3Path, wasCached: true };
   }
 
-  // Download and extract audio as WAV
+  // Download and extract audio as MP3
   await getYtDlp().downloadAsync(url, {
-    output: outputPath, // yt-dlp will add .wav extension
+    output: outputPath, // yt-dlp will add .mp3 extension
     extractAudio: true,
-    audioFormat: 'wav',
+    audioFormat: 'mp3',
     audioQuality: '0', // Best quality
   });
 
-  return { audioPath: wavPath, wasCached: false };
+  return { audioPath: mp3Path, wasCached: false };
 }
