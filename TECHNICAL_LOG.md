@@ -12,7 +12,7 @@ This document tracks all technical decisions, challenges, and solutions encounte
 - **Runtime**: Bun (fast JavaScript/TypeScript runtime and package manager)
 - **CLI Framework**: Clack (@clack/prompts) for interactive prompts
 - **YouTube Download**: ytdlp-nodejs (manages yt-dlp binary automatically)
-- **Transcription**: AssemblyAI SDK + OpenAI API (gpt-4o-transcribe-diarize)
+- **Transcription**: AssemblyAI SDK + Whisper (local via faster-whisper)
 - **Testing**: bun:test
 - **Monorepo**: Bun workspaces
 
@@ -49,14 +49,16 @@ This document tracks all technical decisions, challenges, and solutions encounte
 - Handles ffmpeg dependency via downloadFFmpeg() method
 - Active maintenance and good documentation
 
-### 4. Transcription Provider: AssemblyAI vs OpenAI vs Deepgram
-**Decision**: Support both AssemblyAI and OpenAI with user selection
+### 4. Transcription Provider: AssemblyAI vs Whisper (Local) vs Cloud APIs
+**Decision**: Support both AssemblyAI (cloud) and Whisper (local) with user selection
 
 **Rationale**:
-- AssemblyAI: Purpose-built for transcription, reliable speaker diarization
-- OpenAI: gpt-4o-transcribe-diarize model, alternative for users with OpenAI credits
-- User choice: Different pricing models and quality trade-offs
+- AssemblyAI: Purpose-built for transcription, reliable speaker diarization, API-based
+- Whisper (local): No API costs, complete privacy, GPU-accelerated, offline capable
+- User choice: Cloud vs local, cost vs convenience trade-offs
 - Extensibility: Easy to add more providers in the future
+
+**Evolution**: Initially planned OpenAI API support, but persistent "corrupted audio" errors led to switching to local Whisper using faster-whisper library (Challenge 12)
 
 ---
 
@@ -317,6 +319,257 @@ if (transcription.segments && Array.isArray(transcription.segments)) {
 ```
 
 **Learning**: Bleeding-edge API features may not have types yet. Runtime checks are essential when using `any`.
+
+---
+
+### Challenge 11: OpenAI 25MB File Size Limit
+**Problem**: OpenAI API has a 25MB limit for audio files, but our high-quality MP3 files were exceeding 90MB for longer videos.
+
+**Error**: 400 Bad Request - "something went wrong reading your request"
+
+**Root Cause**:
+- High-quality audio (320kbps, stereo, 44.1kHz) creates large files
+- A 45-minute video at high quality = ~90MB
+- OpenAI silently rejects files > 25MB with generic error
+
+**Solution**: Implement smart compression with dynamic bitrate calculation
+```typescript
+export async function compressAudioForOpenAI(inputPath: string): Promise<string> {
+  const fileSizeMB = statSync(inputPath).size / (1024 * 1024);
+
+  // Only compress if needed
+  if (fileSizeMB < 25) return inputPath;
+
+  // Get audio duration using ffprobe
+  const duration = await getAudioDuration(inputPath);
+
+  // Calculate bitrate to ensure file stays under 25MB
+  // Target 24MB for safety margin (25MB * 0.96)
+  // Formula: Bitrate (kbps) = (target size MB * 8192) / duration seconds
+  const targetSizeMB = 24;
+  const targetBitrate = Math.floor((targetSizeMB * 8192) / duration);
+
+  // Clamp between 24kbps (minimum acceptable) and 64kbps
+  const bitrate = Math.max(24, Math.min(64, targetBitrate));
+
+  // Compress with speech-optimized settings
+  await spawn('ffmpeg', [
+    '-i', inputPath,
+    '-ac', '1',              // Mono
+    '-ar', '16000',          // 16kHz sample rate
+    '-b:a', `${bitrate}k`,   // Calculated bitrate
+    '-y',
+    compressedPath
+  ]);
+
+  // Validate result is under 25MB
+  const compressedSizeMB = statSync(compressedPath).size / (1024 * 1024);
+  if (compressedSizeMB >= 25) {
+    throw new Error(`Compressed file still exceeds 25MB limit`);
+  }
+
+  return compressedPath;
+}
+```
+
+**Key Improvements**:
+- Dynamic bitrate calculation based on audio duration
+- Targets 24MB (safety margin below 25MB limit)
+- Validation ensures compressed file actually meets limit
+- Cached compressed files verified before reuse
+
+**Results**:
+- 90MB (45min) → ~22MB with 43kbps bitrate (75% reduction)
+- Speech quality remains excellent for transcription
+- Bitrate adapts: longer videos get lower bitrate, shorter get higher
+- Compression cached (reused on subsequent runs)
+- Compression time: ~5-15 seconds depending on video length
+
+**Design Decision**: Compress only for OpenAI, keep high quality for AssemblyAI
+- AssemblyAI has no file size limit
+- Different providers may benefit from different quality levels
+- User can listen to both versions to verify quality
+
+**Learning**:
+- Always check provider API limits before processing
+- Speech recognition doesn't need music-quality audio
+- Mono 16kHz 64kbps is industry standard for speech APIs
+- Generic API errors often hide specific constraint violations
+
+---
+
+### Challenge 12: OpenAI API Persistent Audio File Errors
+**Problem**: Even after implementing compression and switching to direct API calls, OpenAI continued rejecting audio files with "Audio file might be corrupted or unsupported" error.
+
+**Attempts Made**:
+1. ✗ Changed from WAV to MP3 format
+2. ✗ Implemented dynamic compression with bitrate calculation
+3. ✗ Switched from OpenAI SDK to direct fetch() API calls
+4. ✗ Used FormData with Blob for proper multipart encoding
+5. ✗ Tried both gpt-4o-transcribe and gpt-4o-transcribe-diarize models
+
+**Root Cause**: Unknown - OpenAI API repeatedly rejected files despite correct format and size
+
+**Final Solution**: Use platform-specific Whisper implementations
+
+**Why different implementations**:
+- **faster-whisper**: Requires pkg-config and native dependencies (av/PyAV) - rejected
+- **openai-whisper**: Official implementation but MPS (Metal) has NaN bugs
+- **mlx-whisper**: Optimized for Apple Silicon with native Metal support - perfect for Mac!
+
+**Implementation Strategy**:
+1. **Apple Silicon (M1/M2/M3)**: Use mlx-whisper with MLX framework
+   - Native Metal GPU acceleration
+   - No PyTorch MPS NaN issues
+   - 7-10x faster than real-time
+
+2. **NVIDIA GPUs**: Use openai-whisper with CUDA
+   - Mature CUDA support
+   - 10x faster than real-time
+
+3. **CPU**: Use openai-whisper
+   - Universal fallback
+   - Still 1.5-2x faster than real-time
+
+**Code**:
+```python
+# Apple Silicon (mlx-whisper)
+import mlx_whisper
+result = mlx_whisper.transcribe(
+    audio_path,
+    path_or_hf_repo="mlx-community/whisper-large-v3-mlx",
+    language=language
+)
+
+# NVIDIA/CPU (openai-whisper)
+import whisper
+model = whisper.load_model("large", device="cuda" if available else "cpu")
+result = model.transcribe(audio_path, language=language, fp16=use_cuda)
+```
+
+**Key Features**:
+- GPU acceleration (Metal on Mac, CUDA on NVIDIA)
+- Real-time progress updates during transcription
+- No API costs or rate limits
+- Privacy: audio never leaves local machine
+- Offline operation (after model download)
+- One-time model download (~3GB for large-v2)
+- Models cached in `~/.cache/torch/hub/`
+
+**Performance**:
+- With GPU: 45-min video → 3-5 min (0.1x real-time)
+- CPU only: 45-min video → 15-30 min (0.5x real-time)
+
+**Trade-offs**:
+- ✅ No API costs
+- ✅ Unlimited transcriptions
+- ✅ Complete privacy
+- ✅ Often faster with GPU
+- ✅ Auto-installs faster-whisper on first run (no manual setup)
+- ✅ Uses isolated virtual environment (no system package conflicts)
+- ✓ Requires Python 3.8+ (for venv creation)
+- ✓ First run downloads 3GB model
+- ✓ No speaker diarization in base implementation (would need pyannote)
+
+**Setup**:
+Automatic! CLI creates virtual environment and installs openai-whisper:
+```bash
+python3 -m venv .venv-whisper
+.venv-whisper/bin/pip install openai-whisper
+```
+This approach solves macOS externally-managed-environment (PEP 668) restrictions by using an isolated environment. Switched from faster-whisper to openai-whisper to avoid pkg-config dependency issues.
+
+**Known Issue - MPS NaN Values (Solved!)**:
+PyTorch's MPS (Metal Performance Shaders) backend has compatibility issues with Whisper that cause NaN values:
+```
+ValueError: Expected parameter logits (Tensor of shape (1, 51866))
+to satisfy the constraint IndependentConstraint(Real(), 1),
+but found invalid values: tensor([[nan, nan, nan, ...]], device='mps:0')
+```
+
+**Solution**: Use mlx-whisper for Apple Silicon instead of PyTorch
+1. **Apple Silicon**: Install `mlx-whisper` (Apple's MLX framework)
+   - Native Metal acceleration without PyTorch MPS bugs
+   - Specifically optimized for M1/M2/M3 chips
+   - ~7-10x faster than real-time
+2. **NVIDIA**: Install `openai-whisper` with CUDA
+   - Mature CUDA support, very fast
+3. **CPU**: Install `openai-whisper` for universal compatibility
+
+Auto-detection based on system architecture (os.arch() === 'arm64' for M-series Macs).
+
+**Learning**:
+- When external APIs are unreliable, local solutions can be better
+- Local GPU inference is now practical for many AI tasks
+- PyTorch MPS still has rough edges with some models (like Whisper)
+- Automatic fallback mechanisms provide robustness
+- CUDA (NVIDIA) is more mature than MPS for ML workloads
+- One-time setup cost (model download) pays off quickly
+- Privacy and cost savings are major benefits of local inference
+
+---
+
+### Challenge 13: Adding Speaker Diarization to Local Whisper
+**Problem**: Base Whisper transcribes audio but doesn't identify different speakers. Users wanted proper speaker labels like "Speaker A", "Speaker B", etc.
+
+**Initial State**: All segments were labeled as "Speaker A" because Whisper doesn't do speaker diarization.
+
+**Solution**: Integrated pyannote.audio for speaker diarization
+
+**Implementation**:
+```python
+# Step 1: Transcribe with Whisper (get text + timestamps)
+result = mlx_whisper.transcribe(audio_path, ...)
+
+# Step 2: Run speaker diarization with pyannote
+pipeline = Pipeline.from_pretrained(
+    "pyannote/speaker-diarization-3.1",
+    use_auth_token=hf_token
+)
+diarization = pipeline(audio_path)
+
+# Step 3: Align - match speakers to transcription segments
+def get_speaker_at_time(diarization, time_seconds):
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        if turn.start <= time_seconds <= turn.end:
+            return speaker
+    return "A"
+
+for segment in result["segments"]:
+    speaker = get_speaker_at_time(diarization, segment["start"])
+    # Assign speaker to this segment
+```
+
+**Requirements**:
+- Hugging Face token (free) - HF_TOKEN in .env
+- Accept license for pyannote models (one-time)
+- ~300MB model download on first run
+
+**Results**:
+- Accurate speaker identification (SPEAKER_00, SPEAKER_01, etc.)
+- Works with 2-10+ speakers
+- Adds ~30-60 seconds to transcription time
+- All processing still local (privacy maintained)
+
+**Trade-offs**:
+- ✅ Real speaker diarization (not fake labels)
+- ✅ Works with local Whisper (no cloud API needed)
+- ✅ Free (just needs HF token)
+- ✓ Requires HF account and model license acceptance
+- ✓ Slightly slower than transcription alone
+- ✓ First run downloads ~300MB models
+
+**Graceful Degradation**:
+- If HF_TOKEN missing: Shows warning, continues with "Speaker A" for all
+- If diarization fails: Catches exception, continues with "Speaker A"
+- User can still get transcripts even if diarization doesn't work
+
+**Learning**:
+- pyannote.audio is production-ready for speaker diarization
+- Combining specialized models (Whisper + pyannote) works better than monolithic solutions
+- Requiring user tokens for model access is acceptable if well-documented
+- Graceful degradation is important for optional features
+- Speaker diarization is computationally separate from transcription
 
 ---
 

@@ -9,7 +9,10 @@ import {
   downloadAudio,
 } from '../services/youtube.js';
 import { transcribeAudio } from '../services/transcription.js';
-import { transcribeAudioOpenAI } from '../services/transcription-openai.js';
+import {
+  transcribeAudioWhisper,
+  ensureWhisperInstalled
+} from '../services/transcription-whisper.js';
 import {
   formatTranscript,
   generateOutputFilename,
@@ -37,7 +40,7 @@ function formatElapsedTime(ms: number): string {
  */
 export async function transcribeCommand(
   url: string,
-  model: 'assemblyai' | 'openai',
+  model: 'assemblyai' | 'whisper',
   language?: string
 ): Promise<string> {
   const s = spinner();
@@ -52,6 +55,19 @@ export async function transcribeCommand(
   } catch (error) {
     s.stop('Failed to setup yt-dlp');
     throw error;
+  }
+
+  // Ensure Whisper is installed if using local model
+  if (model === 'whisper') {
+    s.start('Checking Whisper installation...');
+    startTime = Date.now();
+    try {
+      await ensureWhisperInstalled();
+      s.stop(`Whisper ready (${formatElapsedTime(Date.now() - startTime)})`);
+    } catch (error) {
+      s.stop('Failed to find Whisper');
+      throw error;
+    }
   }
 
   // Get video information
@@ -96,13 +112,13 @@ export async function transcribeCommand(
 
   // Transcribe audio
   const langMsg = language ? ` (language: ${language})` : ' (auto-detect)';
-  const modelName = model === 'assemblyai' ? 'AssemblyAI' : 'OpenAI gpt-4o-transcribe-diarize';
+  const modelName = model === 'assemblyai' ? 'AssemblyAI' : 'Whisper (local)';
   s.start(`Transcribing audio with ${modelName}${langMsg} - this may take a while...`);
   startTime = Date.now();
   let transcriptionResult;
   try {
-    if (model === 'openai') {
-      transcriptionResult = await transcribeAudioOpenAI(audioFilePath, language);
+    if (model === 'whisper') {
+      transcriptionResult = await transcribeAudioWhisper(audioFilePath, language);
     } else {
       transcriptionResult = await transcribeAudio(audioFilePath, language);
     }

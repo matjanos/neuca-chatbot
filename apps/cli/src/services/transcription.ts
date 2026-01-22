@@ -17,6 +17,7 @@ export async function transcribeAudio(
     speaker_labels: true,
     punctuate: true,
     format_text: true,
+    language_detection: language ? false : true,
     language_code: language as any, // AssemblyAI will auto-detect if undefined
   });
 

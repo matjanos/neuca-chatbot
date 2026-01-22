@@ -17,7 +17,7 @@ async function main() {
     message: 'Select transcription model:',
     options: [
       { value: 'assemblyai', label: 'AssemblyAI (speaker diarization)' },
-      { value: 'openai', label: 'OpenAI gpt-4o-transcribe-diarize' },
+      { value: 'whisper', label: 'Whisper (local) - may be slower on first run' },
     ],
   });
 
@@ -27,18 +27,14 @@ async function main() {
     process.exit(0);
   }
 
-  // Verify appropriate API key is loaded
+  // Verify appropriate API key is loaded (only for cloud services)
   if (model === 'assemblyai' && !process.env.ASSEMBLYAI_API_KEY) {
     cancel(pc.red('Error: ASSEMBLYAI_API_KEY not found in environment'));
     console.error(pc.yellow('Please add to .env file: ASSEMBLYAI_API_KEY=your_api_key_here'));
     process.exit(1);
   }
 
-  if (model === 'openai' && !process.env.OPENAI_API_KEY) {
-    cancel(pc.red('Error: OPENAI_API_KEY not found in environment'));
-    console.error(pc.yellow('Please add to .env file: OPENAI_API_KEY=your_api_key_here'));
-    process.exit(1);
-  }
+  // For Whisper, no API key needed (runs locally)
 
   // Get YouTube URL
   const url = await text({
@@ -84,7 +80,7 @@ async function main() {
     // Run transcription
     const outputPath = await transcribeCommand(
       url,
-      model as 'assemblyai' | 'openai',
+      model as 'assemblyai' | 'whisper',
       language as string | undefined
     );
 

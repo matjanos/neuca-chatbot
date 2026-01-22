@@ -146,6 +146,7 @@ output/
 temp/
 yt-dlp
 ffmpeg
+.venv-whisper/
 
 # IDE
 .idea/
