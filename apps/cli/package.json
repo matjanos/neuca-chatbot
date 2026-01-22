@@ -1,0 +1,20 @@
+{
+  "name": "@neuca/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.9.1",
+    "assemblyai": "^4.0.0",
+    "openai": "^6.16.0",
+    "picocolors": "^1.1.0",
+    "ytdlp-nodejs": "^3.3.9"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.0.0"
+  }
+}
