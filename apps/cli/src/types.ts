@@ -27,3 +27,20 @@ export interface TranscriptOutput {
   segments: TranscriptSegment[];
   timestamp: string;
 }
+
+export interface SpeakerInfo {
+  label: string;
+  normalizedLabel: string;
+  segmentCount: number;
+  totalDuration: number;
+  segments: TranscriptSegment[];
+  assignedName?: string;
+}
+
+export interface AudioSample {
+  segmentIndex: number;
+  start: number;  // ms
+  end: number;    // ms
+  duration: number;
+  text: string;
+}
