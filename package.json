@@ -1,0 +1,9 @@
+{
+  "name": "neuca-chatbot",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "cli": "bun run --cwd apps/cli start",
+    "test": "bun test"
+  }
+}
