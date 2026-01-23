@@ -44,3 +44,61 @@ export interface AudioSample {
   duration: number;
   text: string;
 }
+
+// Embedding types
+
+/** Chunk representation during processing */
+export interface TranscriptChunk {
+  chunkIndex: number;
+  text: string;
+  speaker: string;             // Speaker label (always set)
+  startMs: number;
+  endMs: number;
+  segmentIndices: number[];    // Original segment indices
+  tokenCount: number;
+  // Context pointers
+  prevChunkIndex: number | null;
+  nextChunkIndex: number | null;
+  speakerTurnIndex: number;    // Groups sub-chunks from same speaker turn
+  isPartialTurn: boolean;      // true if split from longer turn
+}
+
+/** Payload stored in Qdrant */
+export interface ChunkPayload {
+  datasetId: string;           // yt-{videoId}
+  docId: string;               // videoId
+  sourceType: 'youtube' | 'file' | 'url';
+  sourceUrl: string;
+  title: string;
+  language: string;
+  chunkIndex: number;
+  startSec: number;
+  endSec: number;
+  speaker: string;             // Speaker label (always set)
+  text: string;
+  segmentIds: string[];
+  tokenCount: number;
+  // Context pointers
+  prevChunkIndex: number | null;
+  nextChunkIndex: number | null;
+  speakerTurnIndex: number;    // Groups sub-chunks from same speaker turn
+  isPartialTurn: boolean;      // true if split from longer turn
+  version: string;
+  ingestedAt: string;
+}
+
+/** Chunking configuration */
+export interface ChunkingConfig {
+  chunkSize: number;           // target tokens per chunk (default: 400)
+  overlapTokens: number;       // overlap in tokens (default: 80)
+  minChunkSize: number;        // minimum tokens (default: 100)
+  strategy: 'token' | 'speaker'; // chunking strategy
+}
+
+export type EmbeddingModel = 'text-embedding-3-small' | 'text-embedding-3-large';
+
+/** Embedding configuration */
+export interface EmbeddingConfig {
+  model: EmbeddingModel;
+  batchSize: number;           // chunks per API call (default: 100)
+}

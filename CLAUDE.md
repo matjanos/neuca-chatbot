@@ -25,13 +25,15 @@ This is a **YouTube transcription CLI** built with Bun workspaces monorepo struc
 ### Data Flow
 ```
 YouTube URL → yt-dlp (download audio) → Whisper/AssemblyAI (transcribe) → Speaker ID (diarization) → Output file
+                                                                                                      ↓
+Transcript File → Parse → Chunk (speaker-aware) → Embed (AI SDK) → Store (Qdrant)
 ```
 
 ### Key Components
 
 **CLI Entry** (`apps/cli/src/index.ts`)
 - Clack-based interactive prompts
-- Main menu: Transcribe, Identify Speakers
+- Main menu: Transcribe, Identify Speakers, Generate Embeddings
 
 **Transcription Pipeline** (`apps/cli/src/commands/transcribe.ts`)
 - Orchestrates: URL validation → audio download → provider selection → transcription → output
@@ -49,10 +51,17 @@ YouTube URL → yt-dlp (download audio) → Whisper/AssemblyAI (transcribe) → 
 - yt-dlp wrapper with automatic binary management
 - Caches audio in `temp/{videoId}.mp3`
 
+**Embedding Pipeline** (`apps/cli/src/commands/generate-embeddings.ts`)
+- Orchestrates: transcript parsing → chunking → embedding → Qdrant storage
+- Uses `chunking.ts` for speaker-aware text splitting
+- Uses `embedding.ts` for OpenAI embeddings via AI SDK
+- Uses `qdrant.ts` for vector storage operations
+
 ### File Locations
 - Audio cache: `temp/`
 - Transcripts: `output/transcript-{videoId}-{timestamp}.txt`
 - Whisper venv: `.venv-whisper/`
+- Qdrant data: `qdrant_data/` (Docker volume)
 
 ## Documentation Requirements
 
@@ -74,10 +83,14 @@ Use the entry format documented in TECHNICAL_LOG.md.
 ```bash
 # Required for cloud transcription
 ASSEMBLYAI_API_KEY=...
-OPENAI_API_KEY=...
+OPENAI_API_KEY=...  # Also used for embeddings
 
 # Required for local Whisper with speaker diarization
 HF_TOKEN=...  # Hugging Face token for pyannote models
+
+# Optional for Qdrant (defaults to localhost:6333)
+QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=...  # Only if using Qdrant Cloud
 ```
 
 Environment files: Root `.env` symlinked to `apps/cli/.env` (Bun's `--cwd` changes working directory).
