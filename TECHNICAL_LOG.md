@@ -870,4 +870,82 @@ opportunity in the AI space...
 
 ---
 
+---
+
+### Challenge 15: Embedding Generation for RAG Retrieval
+**Problem**: Enable semantic search over transcripts for RAG applications. Users need to query transcripts and retrieve relevant context.
+
+**Solution**: Implemented a complete embedding pipeline with the following components:
+
+**1. Infrastructure**
+- Docker Compose setup for Qdrant vector database
+- Single `transcripts` collection with datasetId filtering (enables cross-video search)
+- Indexed payload fields: `datasetId`, `speaker`, `chunkIndex`
+
+**2. Chunking Strategy (speaker-aware)**
+- Merge consecutive same-speaker segments until token limit
+- Split long segments at sentence boundaries
+- Apply 20% overlap between chunks for context preservation
+- Default: 400 tokens per chunk, 80 token overlap, 100 token minimum
+
+**3. Embedding Service**
+- Uses Vercel AI SDK with OpenAI provider
+- Model: `text-embedding-3-large` (3072 dimensions) by default
+- Batch processing with configurable batch size (default: 100)
+
+**4. Qdrant Service**
+- Point ID format: `yt-{videoId}:{chunkIndex:06d}`
+- Supports similarity search with optional datasetId/speaker filters
+- Context expansion: retrieve chunk neighbors (±1) for better coherence
+
+**Key Dependencies Added**:
+```bash
+bun add ai @ai-sdk/openai @qdrant/js-client-rest gpt-tokenizer
+```
+
+**Chunking Presets**:
+| Preset | Chunk Size | Overlap | Use Case |
+|--------|-----------|---------|----------|
+| Balanced | 400 tokens | 80 | General transcripts (default) |
+| Detailed | 200 tokens | 50 | Short-form Q&A |
+| Overview | 800 tokens | 100 | Summarization |
+
+**Cost Estimation** (text-embedding-3-large):
+- ~$0.13 per 1M tokens
+- Typical 1-hour transcript (~15K tokens): ~$0.002
+
+**CLI Flow**:
+```
+Main Menu → "Generate embeddings" → Select transcript → Choose model →
+Choose chunking preset → Preview cost → Confirm → Generate → Store in Qdrant
+```
+
+**Files Created**:
+- `docker-compose.yml` - Qdrant container configuration
+- `apps/cli/src/services/chunking.ts` - Speaker-aware text chunking
+- `apps/cli/src/services/embedding.ts` - AI SDK wrapper for OpenAI embeddings
+- `apps/cli/src/services/qdrant.ts` - Qdrant client operations
+- `apps/cli/src/commands/generate-embeddings.ts` - CLI command
+
+**Learning**:
+- Token counting with `gpt-tokenizer` is fast and synchronous (pure JS)
+- Speaker-aware chunking preserves conversational context better than naive splitting
+- Overlap tokens help maintain context across chunk boundaries
+- Qdrant payload indexes dramatically speed up filtered searches
+- The AI SDK abstracts away OpenAI batch handling complexity
+
+---
+
+## Project Statistics
+
+- **Total Files Created**: 27 files
+- **Lines of Code**: ~1500 (src) + ~300 (tests)
+- **Test Coverage**: 36 tests, 100% of utility functions
+- **Dependencies**: 12 (runtime) + 2 (dev)
+- **Supported Languages**: 6 + auto-detect
+- **Supported Providers**: 2 (AssemblyAI, Whisper local)
+- **Features**: Transcription, Speaker Identification, Embedding Generation
+
+---
+
 *Last Updated: 2026-01-23*

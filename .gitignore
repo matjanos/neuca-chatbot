@@ -147,6 +147,7 @@ temp/
 yt-dlp
 ffmpeg
 .venv-whisper/
+qdrant_data/
 
 # IDE
 .idea/

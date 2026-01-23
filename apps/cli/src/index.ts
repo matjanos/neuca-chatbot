@@ -5,6 +5,7 @@ import { displayAsciiArt } from './utils/ascii-art.js';
 import { isValidYouTubeUrl } from './utils/format.js';
 import { transcribeCommand } from './commands/transcribe.js';
 import { identifySpeakersCommand } from './commands/identify-speakers.js';
+import { generateEmbeddingsCommand } from './commands/generate-embeddings.js';
 
 async function main() {
   // Display ASCII art logo
@@ -19,6 +20,7 @@ async function main() {
     options: [
       { value: 'transcribe', label: 'Transcribe a YouTube video' },
       { value: 'identify', label: 'Identify speakers in existing transcript' },
+      { value: 'embeddings', label: 'Generate embeddings for transcript' },
     ],
   });
 
@@ -36,6 +38,24 @@ async function main() {
         outro(pc.green(`Identified transcript saved to: ${outputPath}`));
       } else {
         outro(pc.yellow('No changes saved'));
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      cancel(pc.red(`Error: ${errorMessage}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Handle embeddings generation
+  if (action === 'embeddings') {
+    try {
+      const datasetId = await generateEmbeddingsCommand();
+      if (datasetId) {
+        outro(pc.green(`Embeddings generated for dataset: ${datasetId}`));
+      } else {
+        outro(pc.yellow('No embeddings generated'));
       }
     } catch (error) {
       const errorMessage =

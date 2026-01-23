@@ -9,6 +9,7 @@ A command-line tool for transcribing YouTube videos with speaker identification.
 - Multiple transcription providers (AssemblyAI cloud, Whisper local)
 - Interactive speaker naming tool
 - Audio caching for faster re-runs
+- Generate embeddings for RAG retrieval (Qdrant + OpenAI)
 
 ## Installation
 
@@ -30,6 +31,9 @@ ASSEMBLYAI_API_KEY=your_key_here
 
 # For local Whisper with speaker diarization (optional)
 HF_TOKEN=your_huggingface_token
+
+# For embedding generation
+OPENAI_API_KEY=your_key_here
 ```
 
 ## Usage
@@ -40,12 +44,40 @@ bun run cli
 
 The interactive CLI will guide you through:
 
-1. **Choose action**: Transcribe video or identify speakers in existing transcript
+1. **Choose action**: Transcribe video, identify speakers, or generate embeddings
 2. **Select model**: AssemblyAI (cloud) or Whisper (local)
 3. **Enter YouTube URL**
 4. **Select language**: Polish, English, German, Portuguese, Ukrainian, Chinese, or auto-detect
 
 Output is saved to `output/transcript-{videoId}-{timestamp}.txt`
+
+## Embedding Generation
+
+Generate vector embeddings for semantic search and RAG applications.
+
+### Prerequisites
+
+Start Qdrant vector database:
+
+```bash
+docker compose up -d
+```
+
+### Usage
+
+Select "Generate embeddings for transcript" from the main menu. The CLI will:
+
+1. Check Qdrant connection
+2. Let you select a transcript file
+3. Choose embedding model (text-embedding-3-large recommended)
+4. Choose chunking strategy (balanced, detailed, or overview)
+5. Generate and store embeddings in Qdrant
+
+### Verify
+
+```bash
+curl http://localhost:6333/collections/transcripts
+```
 
 ## Example Output
 
