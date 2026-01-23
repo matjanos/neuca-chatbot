@@ -57,7 +57,7 @@ export function WelcomeScreen({ onSuggestionClick }: WelcomeScreenProps) {
 
           {/* Simplified heading */}
           <h1 className="mt-6 text-2xl md:text-3xl font-semibold text-text-primary text-center">
-            W czym moge pomoc?
+            W czym mogę pomóc?
           </h1>
 
           {/* Input box - centered */}
