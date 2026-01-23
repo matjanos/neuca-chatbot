@@ -34,7 +34,9 @@ app.get('/health', async (c) => {
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, lectureTitle }: { messages: UIMessage[]; lectureTitle?: string } = await c.req.json();
+    // Accept both UIMessage format (parts) and legacy format (content)
+    type ChatMessage = UIMessage | { id: string; role: string; content: string };
+    const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = await c.req.json();
 
     if (!messages || !Array.isArray(messages)) {
       return c.json({ error: 'messages array is required' }, 400);
@@ -46,11 +48,16 @@ app.post('/api/chat', async (c) => {
       return c.json({ error: 'Last message must be from user' }, 400);
     }
 
-    // Extract text from parts
-    const userText = lastMessage.parts
-      ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-      .map(p => p.text)
-      .join('') || '';
+    // Extract text from parts (new format) or content (legacy format)
+    let userText = '';
+    if ('parts' in lastMessage && Array.isArray(lastMessage.parts)) {
+      userText = lastMessage.parts
+        .filter((p: { type: string }): p is { type: 'text'; text: string } => p.type === 'text')
+        .map((p: { type: 'text'; text: string }) => p.text)
+        .join('');
+    } else if ('content' in lastMessage && typeof lastMessage.content === 'string') {
+      userText = lastMessage.content;
+    }
 
     if (!userText) {
       return c.json({ error: 'User message must contain text' }, 400);
@@ -71,8 +78,21 @@ app.post('/api/chat', async (c) => {
       });
     }
 
+    // Normalize messages to UIMessage format for convertToModelMessages
+    const normalizedMessages: UIMessage[] = messages.map((msg) => {
+      if ('parts' in msg && Array.isArray(msg.parts)) {
+        return msg as UIMessage;
+      }
+      // Convert legacy format to UIMessage
+      return {
+        id: msg.id,
+        role: msg.role as 'user' | 'assistant',
+        parts: [{ type: 'text' as const, text: (msg as { content: string }).content }],
+      };
+    });
+
     // Convert UI messages to model messages and prepend system messages
-    const modelMessages = await convertToModelMessages(messages);
+    const modelMessages = await convertToModelMessages(normalizedMessages);
     const allMessages = [...systemMessages, ...modelMessages];
 
     const result = streamText({
@@ -85,16 +105,10 @@ app.post('/api/chat', async (c) => {
       messages: allMessages,
     });
 
-    // Return AI SDK compatible stream response with metadata
+    // Return AI SDK compatible UI message stream response
+    // Enable sendReasoning to forward reasoning events to frontend
     return result.toUIMessageStreamResponse({
-      messageMetadata: ({ part }) => {
-        if (part.type === 'finish') {
-          return {
-            sources: ragContext.sources,
-            selectedLecture: ragContext.selectedLecture,
-          };
-        }
-      },
+      sendReasoning: true,
     });
   } catch (error) {
     console.error('Error processing chat:', error);

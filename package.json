@@ -5,6 +5,7 @@
   "scripts": {
     "cli": "bun run --cwd apps/cli start",
     "api": "bun run --cwd apps/api dev",
+    "web": "bun run --cwd apps/web dev",
     "test": "bun test"
   }
 }
