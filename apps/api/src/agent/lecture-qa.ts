@@ -40,13 +40,21 @@ function extractSources(results: SearchResult[]): Source[] {
 }
 
 /** Build system prompt */
-function buildSystemPrompt(lectureTitle?: string, hasContext?: boolean): string {
+function buildSystemPrompt(
+  lectureTitle?: string,
+  hasContext?: boolean,
+  availableLectures?: string[]
+): string {
   const basePrompt = lectureTitle
     ? `You are a helpful assistant answering questions about the lecture: "${lectureTitle}".`
     : 'You are a helpful assistant answering questions about lecture transcripts.';
 
+  const lectureListInfo = availableLectures && availableLectures.length > 0
+    ? `\n\nAvailable lectures in the system:\n${availableLectures.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
+    : '';
+
   if (hasContext) {
-    return `${basePrompt}
+    return `${basePrompt}${lectureListInfo}
 
 You have access to the full lecture transcript through semantic search. The excerpts provided below are actual quotes from this lecture, retrieved based on the user's question.
 
@@ -55,14 +63,15 @@ Guidelines:
 - Answer based on the transcript excerpts provided. These are real quotes from the lecture.
 - Reference speakers by name and approximate timestamps when relevant.
 - If the excerpts don't fully answer the question, provide what you can from the available context.
-- Never say you don't have the transcript - you DO have access to it via search.`;
+- Never say you don't have the transcript - you DO have access to it via search.
+- If the user asks about available lectures, tell them what's in the system.`;
   }
 
-  return `${basePrompt}
+  return `${basePrompt}${lectureListInfo}
 
 You have access to this lecture's transcript through semantic search, but no relevant excerpts were found for this particular question.
 
-Be concise. Ask the user to be more specific, or suggest a few concrete topics/speakers they could ask about.`;
+Be concise. Ask the user to be more specific, or suggest a few concrete topics/speakers they could ask about. If the user asks about available lectures, tell them what's in the system.`;
 }
 
 export interface ProcessMessageResult {
@@ -161,8 +170,9 @@ async function prepareContext(
   });
   const context = buildContext(searchResults);
 
-  // Build messages for the LLM
-  const systemPrompt = buildSystemPrompt(effectiveTitle, context.length > 0);
+  // Build messages for the LLM (include all available lectures in system prompt)
+  const allLectures = await listLectures();
+  const systemPrompt = buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
   const history = memory.getHistory(conversationId);
 
   const messages: ModelMessage[] = [
@@ -266,6 +276,61 @@ export async function processMessageStream(
       sources: prepared.sources,
       selectedLecture: prepared.selectedLecture,
     },
+  };
+}
+
+/** RAG context for AI SDK compatible endpoint */
+export interface RAGContext {
+  systemPrompt: string;
+  contextPrompt?: string;
+  sources?: Source[];
+  selectedLecture?: string;
+}
+
+/**
+ * Prepare RAG context for use with AI SDK's useChat pattern.
+ * This is a stateless version that doesn't use conversation memory.
+ */
+export async function prepareRAGContext(
+  userMessage: string,
+  lectureTitle?: string
+): Promise<RAGContext> {
+  // Determine effective lecture title
+  let effectiveTitle = lectureTitle;
+
+  if (!effectiveTitle) {
+    const availableLectures = await listLectures();
+    if (availableLectures.length === 1) {
+      effectiveTitle = availableLectures[0];
+    }
+    // If multiple lectures and none specified, we proceed without filtering
+  }
+
+  // Get all available lectures for the system prompt
+  const allLectures = await listLectures();
+
+  // Generate embedding and search
+  const queryVector = await generateQueryEmbedding(userMessage);
+  const searchResults = await searchSimilar(queryVector, {
+    title: effectiveTitle,
+  });
+  const context = buildContext(searchResults);
+
+  // Build system prompt (include lecture list so model can answer meta-questions)
+  const systemPrompt = buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
+
+  // Build context prompt if we have results
+  const contextPrompt = context
+    ? `Relevant transcript excerpts:\n\n${context}`
+    : undefined;
+
+  const sources = searchResults.length > 0 ? extractSources(searchResults) : undefined;
+
+  return {
+    systemPrompt,
+    contextPrompt,
+    sources,
+    selectedLecture: effectiveTitle,
   };
 }
 

@@ -9,6 +9,19 @@ const mockStreamText = mock(() => ({
     yield 'streaming ';
     yield 'response';
   })(),
+  toTextStreamResponse: () => new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"metadata","conversationId":"test-id"}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"text","text":"Mocked "}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"text","text":"streaming "}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"text","text":"response"}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"done"}\n\n'));
+        controller.close();
+      }
+    }),
+    { headers: { 'Content-Type': 'text/event-stream' } }
+  ),
 }));
 const mockEmbed = mock(() => Promise.resolve({ embedding: new Array(3072).fill(0.1) }));
 
@@ -218,6 +231,85 @@ describe('API Endpoints', () => {
       expect(firstEvent.type).toBe('metadata');
       expect(firstEvent.conversationId).toBeDefined();
     });
+  });
+});
+
+describe('POST /api/chat (AI SDK compatible)', () => {
+  const mockStreamTextWithUIResponse = mock(() => ({
+    toUIMessageStreamResponse: (opts?: { messageMetadata?: (data: { part: { type: string } }) => Record<string, unknown> | undefined }) => {
+      // Call messageMetadata callback if provided to test it doesn't throw
+      if (opts?.messageMetadata) {
+        opts.messageMetadata({ part: { type: 'text' } });
+        opts.messageMetadata({ part: { type: 'finish' } });
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('0:"Hello "\n'));
+            controller.enqueue(new TextEncoder().encode('0:"world"\n'));
+            controller.close();
+          }
+        }),
+        { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
+      );
+    },
+  }));
+
+  test('accepts UIMessage format', async () => {
+    // Temporarily replace the mock for this test
+    mock.module('ai', () => ({
+      generateText: mockGenerateText,
+      streamText: mockStreamTextWithUIResponse,
+      convertToModelMessages: () => [{ role: 'user', content: 'test' }],
+    }));
+
+    const res = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: '1',
+            role: 'user',
+            parts: [{ type: 'text', text: 'What is the lecture about?' }],
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  test('returns error for missing messages', async () => {
+    const res = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('messages array is required');
+  });
+
+  test('returns error when last message is not from user', async () => {
+    const res = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: '1',
+            role: 'assistant',
+            parts: [{ type: 'text', text: 'Hello' }],
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Last message must be from user');
   });
 });
 
