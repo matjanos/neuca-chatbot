@@ -1,0 +1,20 @@
+{
+  "name": "@neuca/api",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.18",
+    "@qdrant/js-client-rest": "^1.16.2",
+    "ai": "^6.0.48",
+    "hono": "^4.7.7"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.0.0"
+  }
+}
