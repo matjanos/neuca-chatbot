@@ -6,6 +6,15 @@ export const DEFAULT_CHUNKING_CONFIG: ChunkingConfig = {
   chunkSize: 400,       // target tokens per chunk (~1600 chars)
   overlapTokens: 80,    // 20% overlap
   minChunkSize: 100,    // minimum tokens to avoid tiny fragments
+  strategy: 'token',    // default to token-based chunking
+};
+
+/** Default configuration for speaker-based chunking */
+export const DEFAULT_SPEAKER_CHUNKING_CONFIG: ChunkingConfig = {
+  chunkSize: 400,       // max tokens before splitting a speaker turn
+  overlapTokens: 0,     // no overlap in speaker-based mode
+  minChunkSize: 0,      // keep all speaker turns regardless of length
+  strategy: 'speaker',
 };
 
 /** Minimum segment duration in milliseconds to filter noise */
@@ -47,14 +56,21 @@ export function chunkTranscript(
   const totalTokens = countTokens(totalText);
 
   if (filteredSegments.length < 5 || totalTokens <= chunkSize) {
+    const speaker = filteredSegments.length === 1
+      ? filteredSegments[0].speaker
+      : 'Mixed';
     return [{
       chunkIndex: 0,
       text: totalText,
-      speaker: filteredSegments.length === 1 ? filteredSegments[0].speaker : null,
+      speaker,
       startMs: filteredSegments[0].start,
       endMs: filteredSegments[filteredSegments.length - 1].end,
       segmentIndices: filteredSegments.map((_, i) => i),
       tokenCount: totalTokens,
+      prevChunkIndex: null,
+      nextChunkIndex: null,
+      speakerTurnIndex: 0,
+      isPartialTurn: false,
     }];
   }
 
@@ -63,7 +79,7 @@ export function chunkTranscript(
   let currentSegmentIndices: number[] = [];
   let currentStartMs = 0;
   let currentEndMs = 0;
-  let currentSpeaker: string | null = null;
+  let currentSpeaker = 'Unknown';
   let overlapBuffer: { text: string; indices: number[]; endMs: number } | null = null;
 
   for (let i = 0; i < filteredSegments.length; i++) {
@@ -84,6 +100,10 @@ export function chunkTranscript(
             endMs: currentEndMs,
             segmentIndices: [...currentSegmentIndices],
             tokenCount,
+            prevChunkIndex: null,  // Will be populated later
+            nextChunkIndex: null,
+            speakerTurnIndex: chunks.length,  // Token-based: each chunk is its own turn
+            isPartialTurn: false,
           });
 
           // Prepare overlap for next chunk
@@ -102,7 +122,7 @@ export function chunkTranscript(
       // Reset state
       currentText = '';
       currentSegmentIndices = [];
-      currentSpeaker = null;
+      currentSpeaker = 'Unknown';
       overlapBuffer = null;
       continue;
     }
@@ -132,6 +152,10 @@ export function chunkTranscript(
           endMs: currentEndMs,
           segmentIndices: [...currentSegmentIndices],
           tokenCount,
+          prevChunkIndex: null,  // Will be populated later
+          nextChunkIndex: null,
+          speakerTurnIndex: chunks.length,  // Token-based: each chunk is its own turn
+          isPartialTurn: false,
         });
 
         // Prepare overlap for next chunk
@@ -160,7 +184,7 @@ export function chunkTranscript(
 
       // Track speaker changes
       if (currentSpeaker !== segment.speaker) {
-        currentSpeaker = null; // Mixed speakers
+        currentSpeaker = 'Mixed'; // Mixed speakers in this chunk
       }
     }
   }
@@ -177,9 +201,16 @@ export function chunkTranscript(
         endMs: currentEndMs,
         segmentIndices: currentSegmentIndices,
         tokenCount,
+        prevChunkIndex: null,  // Will be populated below
+        nextChunkIndex: null,
+        speakerTurnIndex: chunks.length,  // Token-based: each chunk is its own turn
+        isPartialTurn: false,
       });
     }
   }
+
+  // Populate prev/next pointers
+  populateChunkPointers(chunks);
 
   return chunks;
 }
@@ -268,6 +299,10 @@ function splitLongSegment(
         endMs: chunkEndMs,
         segmentIndices: [segmentIndex],
         tokenCount: countTokens(currentText),
+        prevChunkIndex: null,  // Will be populated later
+        nextChunkIndex: null,
+        speakerTurnIndex: chunkIndex,  // Token-based: each chunk is its own turn
+        isPartialTurn: false,
       });
 
       chunkIndex++;
@@ -289,8 +324,210 @@ function splitLongSegment(
       endMs: segment.end,
       segmentIndices: [segmentIndex],
       tokenCount: countTokens(currentText),
+      prevChunkIndex: null,  // Will be populated later
+      nextChunkIndex: null,
+      speakerTurnIndex: chunkIndex,  // Token-based: each chunk is its own turn
+      isPartialTurn: false,
     });
   }
+
+  return chunks;
+}
+
+/**
+ * Populate prev/next chunk pointers after all chunks are created
+ */
+function populateChunkPointers(chunks: TranscriptChunk[]): void {
+  for (let i = 0; i < chunks.length; i++) {
+    chunks[i].prevChunkIndex = i > 0 ? i - 1 : null;
+    chunks[i].nextChunkIndex = i < chunks.length - 1 ? i + 1 : null;
+  }
+}
+
+/**
+ * Speaker turn representation for grouping
+ */
+interface SpeakerTurn {
+  speaker: string;
+  segments: Array<{ index: number; segment: TranscriptSegment }>;
+  text: string;
+  startMs: number;
+  endMs: number;
+  tokenCount: number;
+}
+
+/**
+ * Group consecutive segments by speaker into turns
+ */
+function groupSegmentsIntoTurns(segments: TranscriptSegment[]): SpeakerTurn[] {
+  if (segments.length === 0) return [];
+
+  const turns: SpeakerTurn[] = [];
+  let currentTurn: SpeakerTurn | null = null;
+
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+
+    if (!currentTurn || currentTurn.speaker !== segment.speaker) {
+      // Start a new turn
+      if (currentTurn) {
+        turns.push(currentTurn);
+      }
+      currentTurn = {
+        speaker: segment.speaker,
+        segments: [{ index: i, segment }],
+        text: segment.text,
+        startMs: segment.start,
+        endMs: segment.end,
+        tokenCount: countTokens(segment.text),
+      };
+    } else {
+      // Continue current turn
+      currentTurn.segments.push({ index: i, segment });
+      currentTurn.text += ' ' + segment.text;
+      currentTurn.endMs = segment.end;
+      currentTurn.tokenCount = countTokens(currentTurn.text);
+    }
+  }
+
+  // Don't forget the last turn
+  if (currentTurn) {
+    turns.push(currentTurn);
+  }
+
+  return turns;
+}
+
+/**
+ * Split a speaker turn at sentence boundaries when it exceeds token limit
+ */
+function splitSpeakerTurn(
+  turn: SpeakerTurn,
+  turnIndex: number,
+  maxTokens: number,
+  startChunkIndex: number
+): TranscriptChunk[] {
+  const chunks: TranscriptChunk[] = [];
+
+  // Split text at sentence boundaries
+  const sentences = turn.text.split(/(?<=[.!?])\s+/);
+  let currentText = '';
+  let chunkIndex = startChunkIndex;
+  let currentStartMs = turn.startMs;
+
+  for (const sentence of sentences) {
+    const testText = currentText + (currentText ? ' ' : '') + sentence;
+    const testTokens = countTokens(testText);
+
+    if (testTokens > maxTokens && currentText) {
+      // Calculate approximate time range based on text position
+      const textRatio = currentText.length / turn.text.length;
+      const duration = turn.endMs - turn.startMs;
+      const chunkEndMs = turn.startMs + Math.floor(duration * textRatio);
+
+      chunks.push({
+        chunkIndex,
+        text: currentText.trim(),
+        speaker: turn.speaker,
+        startMs: currentStartMs,
+        endMs: chunkEndMs,
+        segmentIndices: turn.segments.map(s => s.index),
+        tokenCount: countTokens(currentText),
+        prevChunkIndex: null,  // Will be populated later
+        nextChunkIndex: null,
+        speakerTurnIndex: turnIndex,
+        isPartialTurn: true,
+      });
+
+      chunkIndex++;
+      currentText = sentence;
+      currentStartMs = chunkEndMs;
+    } else {
+      currentText = testText;
+    }
+  }
+
+  // Last chunk from this turn
+  if (currentText.trim()) {
+    chunks.push({
+      chunkIndex,
+      text: currentText.trim(),
+      speaker: turn.speaker,
+      startMs: currentStartMs,
+      endMs: turn.endMs,
+      segmentIndices: turn.segments.map(s => s.index),
+      tokenCount: countTokens(currentText),
+      prevChunkIndex: null,  // Will be populated later
+      nextChunkIndex: null,
+      speakerTurnIndex: turnIndex,
+      isPartialTurn: chunks.length > 0,  // Only partial if we created earlier chunks
+    });
+  }
+
+  return chunks;
+}
+
+/**
+ * Chunk transcript by speaker turns
+ *
+ * Strategy:
+ * 1. Filter out very short segments (noise)
+ * 2. Group consecutive segments by speaker into "turns"
+ * 3. For each turn:
+ *    - If under token limit: create single chunk
+ *    - If over limit: split at sentence boundaries, mark isPartialTurn=true
+ * 4. Populate prev/next pointers
+ */
+export function chunkTranscriptBySpeaker(
+  segments: TranscriptSegment[],
+  config: ChunkingConfig = DEFAULT_SPEAKER_CHUNKING_CONFIG
+): TranscriptChunk[] {
+  const { chunkSize } = config;
+
+  // Filter out very short segments (noise)
+  const filteredSegments = segments.filter(
+    s => (s.end - s.start) >= MIN_SEGMENT_DURATION_MS && s.text.trim().length > 0
+  );
+
+  if (filteredSegments.length === 0) {
+    return [];
+  }
+
+  // Group consecutive segments by speaker into turns
+  const turns = groupSegmentsIntoTurns(filteredSegments);
+
+  // Create chunks from turns
+  const chunks: TranscriptChunk[] = [];
+
+  for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
+    const turn = turns[turnIndex];
+
+    if (turn.tokenCount <= chunkSize) {
+      // Single chunk for this turn
+      chunks.push({
+        chunkIndex: chunks.length,
+        text: turn.text.trim(),
+        speaker: turn.speaker,
+        startMs: turn.startMs,
+        endMs: turn.endMs,
+        segmentIndices: turn.segments.map(s => s.index),
+        tokenCount: turn.tokenCount,
+        prevChunkIndex: null,  // Will be populated later
+        nextChunkIndex: null,
+        speakerTurnIndex: turnIndex,
+        isPartialTurn: false,
+      });
+    } else {
+      // Split long turn at sentence boundaries
+      const turnChunks = splitSpeakerTurn(turn, turnIndex, chunkSize, chunks.length);
+      for (const chunk of turnChunks) {
+        chunks.push(chunk);
+      }
+    }
+  }
+
+  // Populate prev/next pointers
+  populateChunkPointers(chunks);
 
   return chunks;
 }

@@ -51,11 +51,16 @@ export interface AudioSample {
 export interface TranscriptChunk {
   chunkIndex: number;
   text: string;
-  speaker: string | null;
+  speaker: string;             // Speaker label (always set)
   startMs: number;
   endMs: number;
   segmentIndices: number[];    // Original segment indices
   tokenCount: number;
+  // Context pointers
+  prevChunkIndex: number | null;
+  nextChunkIndex: number | null;
+  speakerTurnIndex: number;    // Groups sub-chunks from same speaker turn
+  isPartialTurn: boolean;      // true if split from longer turn
 }
 
 /** Payload stored in Qdrant */
@@ -69,10 +74,15 @@ export interface ChunkPayload {
   chunkIndex: number;
   startSec: number;
   endSec: number;
-  speaker: string | null;
+  speaker: string;             // Speaker label (always set)
   text: string;
   segmentIds: string[];
   tokenCount: number;
+  // Context pointers
+  prevChunkIndex: number | null;
+  nextChunkIndex: number | null;
+  speakerTurnIndex: number;    // Groups sub-chunks from same speaker turn
+  isPartialTurn: boolean;      // true if split from longer turn
   version: string;
   ingestedAt: string;
 }
@@ -82,6 +92,7 @@ export interface ChunkingConfig {
   chunkSize: number;           // target tokens per chunk (default: 400)
   overlapTokens: number;       // overlap in tokens (default: 80)
   minChunkSize: number;        // minimum tokens (default: 100)
+  strategy: 'token' | 'speaker'; // chunking strategy
 }
 
 export type EmbeddingModel = 'text-embedding-3-small' | 'text-embedding-3-large';

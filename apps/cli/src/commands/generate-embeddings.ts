@@ -16,8 +16,10 @@ import type { EmbeddingModel, ChunkingConfig } from '../types.js';
 import { parseTranscriptFile } from '../utils/transcript-io.js';
 import {
   chunkTranscript,
+  chunkTranscriptBySpeaker,
   getChunkingStats,
   DEFAULT_CHUNKING_CONFIG,
+  DEFAULT_SPEAKER_CHUNKING_CONFIG,
 } from '../services/chunking.js';
 import {
   generateEmbeddings,
@@ -71,19 +73,19 @@ function formatDuration(seconds: number): string {
 }
 
 /**
- * Chunking presets
+ * Token-based chunking presets
  */
-const CHUNKING_PRESETS: Record<string, { config: ChunkingConfig; description: string }> = {
+const TOKEN_CHUNKING_PRESETS: Record<string, { config: ChunkingConfig; description: string }> = {
   balanced: {
     config: DEFAULT_CHUNKING_CONFIG,
     description: 'Balanced (400 tokens, 20% overlap) - recommended for most transcripts',
   },
   detailed: {
-    config: { chunkSize: 200, overlapTokens: 50, minChunkSize: 50 },
+    config: { chunkSize: 200, overlapTokens: 50, minChunkSize: 50, strategy: 'token' as const },
     description: 'Detailed (200 tokens) - more granular, better for short-form Q&A',
   },
   overview: {
-    config: { chunkSize: 800, overlapTokens: 100, minChunkSize: 150 },
+    config: { chunkSize: 800, overlapTokens: 100, minChunkSize: 150, strategy: 'token' as const },
     description: 'Overview (800 tokens) - fewer chunks, better for summarization',
   },
 };
@@ -218,26 +220,58 @@ export async function generateEmbeddingsCommand(
   const embeddingModel = modelSelection as EmbeddingModel;
   const modelInfo = getModelInfo(embeddingModel);
 
-  // Step 7: Select chunking preset
-  const chunkingSelection = await select({
-    message: 'Select chunking strategy:',
+  // Step 7: Select chunking strategy
+  const strategySelection = await select({
+    message: 'Chunking strategy:',
     options: [
-      { value: 'balanced', label: CHUNKING_PRESETS.balanced.description },
-      { value: 'detailed', label: CHUNKING_PRESETS.detailed.description },
-      { value: 'overview', label: CHUNKING_PRESETS.overview.description },
+      {
+        value: 'speaker',
+        label: 'Speaker-based (Recommended) - One chunk per speaker turn',
+        hint: 'preserves conversation structure',
+      },
+      {
+        value: 'token',
+        label: 'Token-based - Fixed token size with overlap',
+        hint: 'traditional RAG chunking',
+      },
     ],
   });
 
-  if (isCancel(chunkingSelection)) {
+  if (isCancel(strategySelection)) {
     cancel('Operation cancelled');
     return null;
   }
 
-  const chunkingConfig = CHUNKING_PRESETS[chunkingSelection as string].config;
+  const strategy = strategySelection as 'speaker' | 'token';
+  let chunkingConfig: ChunkingConfig;
+
+  if (strategy === 'token') {
+    // Step 7b: Select token-based chunking preset
+    const chunkingSelection = await select({
+      message: 'Select chunk size:',
+      options: [
+        { value: 'balanced', label: TOKEN_CHUNKING_PRESETS.balanced.description },
+        { value: 'detailed', label: TOKEN_CHUNKING_PRESETS.detailed.description },
+        { value: 'overview', label: TOKEN_CHUNKING_PRESETS.overview.description },
+      ],
+    });
+
+    if (isCancel(chunkingSelection)) {
+      cancel('Operation cancelled');
+      return null;
+    }
+
+    chunkingConfig = TOKEN_CHUNKING_PRESETS[chunkingSelection as string].config;
+  } else {
+    // Speaker-based uses default config (400 token split threshold)
+    chunkingConfig = DEFAULT_SPEAKER_CHUNKING_CONFIG;
+  }
 
   // Step 8: Chunk transcript
   s.start('Chunking transcript...');
-  const chunks = chunkTranscript(transcript.segments, chunkingConfig);
+  const chunks = strategy === 'speaker'
+    ? chunkTranscriptBySpeaker(transcript.segments, chunkingConfig)
+    : chunkTranscript(transcript.segments, chunkingConfig);
   const chunkStats = getChunkingStats(chunks);
   s.stop(`Created ${chunkStats.totalChunks} chunks (avg ${chunkStats.avgTokensPerChunk} tokens)`);
 

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { ChunkPayload, TranscriptChunk } from '../types.js';
 
@@ -5,9 +6,23 @@ import type { ChunkPayload, TranscriptChunk } from '../types.js';
 const DEFAULT_QDRANT_URL = 'http://localhost:6333';
 const COLLECTION_NAME = 'transcripts';
 
-/** Point ID format: yt-{videoId}:{chunkIndex:06d} */
+/** Generate a deterministic UUID from a string using SHA-256 */
+function stringToUuid(input: string): string {
+  const hash = createHash('sha256').update(input).digest('hex');
+  // Format as UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    hash.slice(12, 16),
+    hash.slice(16, 20),
+    hash.slice(20, 32),
+  ].join('-');
+}
+
+/** Generate deterministic UUID for a chunk based on datasetId and index */
 function formatPointId(datasetId: string, chunkIndex: number): string {
-  return `${datasetId}:${chunkIndex.toString().padStart(6, '0')}`;
+  const input = `${datasetId}:${chunkIndex.toString().padStart(6, '0')}`;
+  return stringToUuid(input);
 }
 
 /** Create Qdrant client */
@@ -73,6 +88,11 @@ export async function ensureCollection(
         field_name: 'chunkIndex',
         field_schema: 'integer',
       });
+
+      await client.createPayloadIndex(COLLECTION_NAME, {
+        field_name: 'speakerTurnIndex',
+        field_schema: 'integer',
+      });
     }
   } catch (error) {
     throw new Error(`Failed to ensure collection: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -116,7 +136,12 @@ export async function upsertChunks(
       text: chunk.text,
       segmentIds: chunk.segmentIndices.map(i => `seg-${i}`),
       tokenCount: chunk.tokenCount,
-      version: '1.0',
+      // Context pointers
+      prevChunkIndex: chunk.prevChunkIndex,
+      nextChunkIndex: chunk.nextChunkIndex,
+      speakerTurnIndex: chunk.speakerTurnIndex,
+      isPartialTurn: chunk.isPartialTurn,
+      version: '2.0',
       ingestedAt: new Date().toISOString(),
     } as Record<string, unknown>,
   }));
