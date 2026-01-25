@@ -11,20 +11,20 @@ interface WelcomeScreenProps {
 
 const suggestions = [
   {
-    text: 'Glowne tematy',
-    prompt: 'Jakie byly glowne tematy omawiane na wykladzie?',
+    text: 'Główne tematy',
+    prompt: 'Jakie były główne tematy omawiane na wykładzie?',
   },
   {
     text: 'Kluczowe wnioski',
-    prompt: 'Jakie sa najwazniejsze wnioski z tego wykladu?',
+    prompt: 'Jakie są najważniejsze wnioski z tego wykładu?',
   },
   {
     text: 'Streszczenie',
-    prompt: 'Strzesc najwazniejsze punkty z wykladu.',
+    prompt: 'Streszczenie najważniejszych punktów z wykładu.',
   },
   {
     text: 'Pytania i odpowiedzi',
-    prompt: 'Jakie pytania padaly podczas wykladu?',
+    prompt: 'Jakie pytania padły podczas wykładu?',
   },
 ]
 

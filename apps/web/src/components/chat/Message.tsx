@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import type { UIMessage } from '@ai-sdk/react'
+import { ParsedMessageText } from './ParsedMessageText'
+import { VideoModal } from '../video/VideoModal'
 
 interface MessageProps {
   message: UIMessage
+  videoId?: string | null
 }
 
 function ReasoningBlock({ reasoning }: { reasoning: string }) {
@@ -98,8 +101,15 @@ function getToolName(part: unknown): string | null {
   return null
 }
 
-export function Message({ message }: MessageProps) {
+export function Message({ message, videoId }: MessageProps) {
   const isUser = message.role === 'user'
+  const [modalOpen, setModalOpen] = useState(false)
+  const [selectedTimestamp, setSelectedTimestamp] = useState(0)
+
+  const handleTimestampClick = (startSeconds: number) => {
+    setSelectedTimestamp(startSeconds)
+    setModalOpen(true)
+  }
 
   // Render message parts
   const renderParts = () => {
@@ -113,7 +123,11 @@ export function Message({ message }: MessageProps) {
         if (!text.trim()) return null
         return (
           <p key={index} className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">
-            {text}
+            <ParsedMessageText
+              text={text}
+              videoId={videoId}
+              onTimestampClick={handleTimestampClick}
+            />
           </p>
         )
       }
@@ -139,19 +153,30 @@ export function Message({ message }: MessageProps) {
   }
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`
-          max-w-[85%] md:max-w-[70%] px-4 py-3
-          ${
-            isUser
-              ? 'bg-gray-100 text-text-primary rounded-2xl rounded-br-md'
-              : 'bg-white text-text-primary rounded-2xl rounded-bl-md border border-gray-100 shadow-sm'
-          }
-        `}
-      >
-        {renderParts()}
+    <>
+      <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div
+          className={`
+            max-w-[85%] md:max-w-[70%] px-4 py-3
+            ${
+              isUser
+                ? 'bg-gray-100 text-text-primary rounded-2xl rounded-br-md'
+                : 'bg-white text-text-primary rounded-2xl rounded-bl-md border border-gray-100 shadow-sm'
+            }
+          `}
+        >
+          {renderParts()}
+        </div>
       </div>
-    </div>
+
+      {videoId && (
+        <VideoModal
+          isOpen={modalOpen}
+          onClose={() => setModalOpen(false)}
+          videoId={videoId}
+          startSeconds={selectedTimestamp}
+        />
+      )}
+    </>
   )
 }

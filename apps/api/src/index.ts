@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { streamText, convertToModelMessages, UIMessage } from 'ai';
+import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { SERVER_CONFIG, MODEL_CONFIG } from './config.js';
 import type { CompletionRequest, CompletionResponse } from './types.js';
@@ -28,14 +28,40 @@ app.get('/health', async (c) => {
   });
 });
 
+/** Message part with text content */
+interface TextPart {
+  type: 'text';
+  text: string;
+}
+
+/** Message part (can be text, reasoning, tool-invocation, etc.) */
+interface MessagePart {
+  type: string;
+  text?: string;
+}
+
+/** UI Message format from AI SDK */
+interface UIMessageFormat {
+  id: string;
+  role: string;
+  parts?: MessagePart[];
+}
+
+/** Legacy message format */
+interface LegacyMessageFormat {
+  id: string;
+  role: string;
+  content: string;
+}
+
+type ChatMessage = UIMessageFormat | LegacyMessageFormat;
+
 /**
  * AI SDK compatible chat endpoint
  * Works with useChat hook from @ai-sdk/react
  */
 app.post('/api/chat', async (c) => {
   try {
-    // Accept both UIMessage format (parts) and legacy format (content)
-    type ChatMessage = UIMessage | { id: string; role: string; content: string };
     const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = await c.req.json();
 
     if (!messages || !Array.isArray(messages)) {
@@ -78,22 +104,29 @@ app.post('/api/chat', async (c) => {
       });
     }
 
-    // Normalize messages to UIMessage format for convertToModelMessages
-    const normalizedMessages: UIMessage[] = messages.map((msg) => {
+    // Convert messages to simple text format
+    // This bypasses convertToModelMessages which creates internal references to reasoning items
+    const conversationMessages = messages.map((msg) => {
+      let textContent = '';
+
       if ('parts' in msg && Array.isArray(msg.parts)) {
-        return msg as UIMessage;
+        // Extract only text content from parts
+        textContent = msg.parts
+          .filter((p): p is TextPart => p.type === 'text' && typeof p.text === 'string')
+          .map((p) => p.text)
+          .join('');
+      } else if ('content' in msg && typeof msg.content === 'string') {
+        textContent = msg.content;
       }
-      // Convert legacy format to UIMessage
+
       return {
-        id: msg.id,
         role: msg.role as 'user' | 'assistant',
-        parts: [{ type: 'text' as const, text: (msg as { content: string }).content }],
+        content: textContent,
       };
     });
 
-    // Convert UI messages to model messages and prepend system messages
-    const modelMessages = await convertToModelMessages(normalizedMessages);
-    const allMessages = [...systemMessages, ...modelMessages];
+    // Combine system messages with conversation
+    const allMessages = [...systemMessages, ...conversationMessages];
 
     const result = streamText({
       model: openai(MODEL_CONFIG.model),
@@ -105,11 +138,17 @@ app.post('/api/chat', async (c) => {
       messages: allMessages,
     });
 
-    // Return AI SDK compatible UI message stream response
-    // Enable sendReasoning to forward reasoning events to frontend
-    return result.toUIMessageStreamResponse({
+    // Get the streaming response
+    const response = result.toUIMessageStreamResponse({
       sendReasoning: true,
     });
+
+    // Add video context headers for timestamp linking
+    if (ragContext.videoId) {
+      response.headers.set('X-Video-Id', ragContext.videoId);
+    }
+
+    return response;
   } catch (error) {
     console.error('Error processing chat:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';

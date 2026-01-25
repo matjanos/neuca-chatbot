@@ -28,6 +28,8 @@ export interface Source {
   speaker: string;
   startSec: number;
   endSec: number;
+  sourceUrl?: string;
+  docId?: string;
 }
 
 /** Conversation stored in memory */

@@ -36,42 +36,47 @@ function extractSources(results: SearchResult[]): Source[] {
     speaker: r.payload.speaker,
     startSec: r.payload.startSec,
     endSec: r.payload.endSec,
+    sourceUrl: r.payload.sourceUrl,
+    docId: r.payload.docId,
   }));
 }
 
 /** Build system prompt */
-function buildSystemPrompt(
+async function buildSystemPrompt(
   lectureTitle?: string,
   hasContext?: boolean,
   availableLectures?: string[]
-): string {
+): Promise<string> {
+  // Load Neucacz personality from file
+  const neukaczPrompt = await Bun.file(import.meta.dir + '/Neucacz.MD').text();
+
   const basePrompt = lectureTitle
-    ? `You are a helpful assistant answering questions about the lecture: "${lectureTitle}".`
-    : 'You are a helpful assistant answering questions about lecture transcripts.';
+    ? `${neukaczPrompt}\n\nTeraz odpowiadasz na pytania dotyczące wykładu: "${lectureTitle}".`
+    : `${neukaczPrompt}\n\nTeraz odpowiadasz na pytania dotyczące transkrypcji wykładów.`;
 
   const lectureListInfo = availableLectures && availableLectures.length > 0
-    ? `\n\nAvailable lectures in the system:\n${availableLectures.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
+    ? `\n\nDostępne wykłady w systemie:\n${availableLectures.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
     : '';
 
   if (hasContext) {
     return `${basePrompt}${lectureListInfo}
 
-You have access to the full lecture transcript through semantic search. The excerpts provided below are actual quotes from this lecture, retrieved based on the user's question.
+Masz dostęp do pełnej transkrypcji wykładu poprzez wyszukiwanie semantyczne. Poniższe fragmenty to rzeczywiste cytaty z tego wykładu, pobrane na podstawie pytania użytkownika.
 
-Guidelines:
-- Be concise and direct. Give short, focused answers unless the user asks for detail or elaboration.
-- Answer based on the transcript excerpts provided. These are real quotes from the lecture.
-- Reference speakers by name and approximate timestamps when relevant.
-- If the excerpts don't fully answer the question, provide what you can from the available context.
-- Never say you don't have the transcript - you DO have access to it via search.
-- If the user asks about available lectures, tell them what's in the system.`;
+Wytyczne:
+- Bądź zwięzły i konkretny. Udzielaj krótkich, skupionych odpowiedzi, chyba że użytkownik prosi o szczegóły lub rozwinięcie.
+- Odpowiadaj na podstawie dostarczonych fragmentów transkrypcji. To są prawdziwe cytaty z wykładu.
+- Odwołuj się do mówców po imieniu i przybliżonych znacznikach czasowych, gdy jest to istotne.
+- Jeśli fragmenty nie odpowiadają w pełni na pytanie, podaj to, co możesz na podstawie dostępnego kontekstu.
+- Nigdy nie mów, że nie masz transkrypcji - MASZ do niej dostęp poprzez wyszukiwanie.
+- Jeśli użytkownik pyta o dostępne wykłady, powiedz mu, co jest w systemie.`;
   }
 
   return `${basePrompt}${lectureListInfo}
 
-You have access to this lecture's transcript through semantic search, but no relevant excerpts were found for this particular question.
+Masz dostęp do transkrypcji tego wykładu poprzez wyszukiwanie semantyczne, ale nie znaleziono odpowiednich fragmentów dla tego konkretnego pytania.
 
-Be concise. Ask the user to be more specific, or suggest a few concrete topics/speakers they could ask about. If the user asks about available lectures, tell them what's in the system.`;
+Bądź zwięzły. Poproś użytkownika, aby był bardziej konkretny, lub zasugeruj kilka konkretnych tematów/mówców, o których może zapytać. Jeśli użytkownik pyta o dostępne wykłady, powiedz mu, co jest w systemie.`;
 }
 
 export interface ProcessMessageResult {
@@ -122,7 +127,7 @@ async function prepareContext(
 
     if (availableLectures.length === 0) {
       memory.addMessage(conversationId, { role: 'user', content: userMessage });
-      const response = "I don't have any lecture transcripts available. Please add some transcripts first using the CLI tool.";
+      const response = "Nie mam dostępnych żadnych transkrypcji wykładów. Najpierw dodaj transkrypcje za pomocą narzędzia CLI.";
       memory.addMessage(conversationId, { role: 'assistant', content: response });
       return { type: 'early', result: { response } };
     }
@@ -133,7 +138,7 @@ async function prepareContext(
     } else {
       memory.addMessage(conversationId, { role: 'user', content: userMessage });
       const lectureList = availableLectures.map((t, i) => `${i + 1}. ${t}`).join('\n');
-      const response = `I have ${availableLectures.length} lecture transcripts available. Which one would you like to discuss?\n\n${lectureList}\n\nPlease specify the lecture by number or name.`;
+      const response = `Mam ${availableLectures.length} transkrypcji wykładów dostępnych. Który wykład chcesz omówić?\n\n${lectureList}\n\nProszę określić wykład numer lub nazwę.`;
       memory.addMessage(conversationId, { role: 'assistant', content: response });
       return {
         type: 'early',
@@ -155,7 +160,7 @@ async function prepareContext(
   if (selectedLecture && selectedLecture !== effectiveTitle) {
     effectiveTitle = selectedLecture;
     memory.setLectureTitle(conversationId, effectiveTitle);
-    const response = `Great! I'll help you with questions about "${effectiveTitle}". What would you like to know?`;
+    const response = `Świetnie! Pomogę Ci z pytaniami dotyczącymi "${effectiveTitle}". Co chciałbyś wiedzieć?`;
     memory.addMessage(conversationId, { role: 'assistant', content: response });
     return {
       type: 'early',
@@ -172,7 +177,7 @@ async function prepareContext(
 
   // Build messages for the LLM (include all available lectures in system prompt)
   const allLectures = await listLectures();
-  const systemPrompt = buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
+  const systemPrompt = await buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
   const history = memory.getHistory(conversationId);
 
   const messages: ModelMessage[] = [
@@ -182,7 +187,7 @@ async function prepareContext(
   if (context) {
     messages.push({
       role: 'system',
-      content: `Relevant transcript excerpts:\n\n${context}`,
+      content: `Odpowiednie fragmenty transkrypcji:\n\n${context}`,
     });
   }
 
@@ -285,6 +290,7 @@ export interface RAGContext {
   contextPrompt?: string;
   sources?: Source[];
   selectedLecture?: string;
+  videoId?: string;
 }
 
 /**
@@ -317,20 +323,24 @@ export async function prepareRAGContext(
   const context = buildContext(searchResults);
 
   // Build system prompt (include lecture list so model can answer meta-questions)
-  const systemPrompt = buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
+  const systemPrompt = await buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
 
   // Build context prompt if we have results
   const contextPrompt = context
-    ? `Relevant transcript excerpts:\n\n${context}`
+    ? `Odpowiednie fragmenty transkrypcji:\n\n${context}`
     : undefined;
 
   const sources = searchResults.length > 0 ? extractSources(searchResults) : undefined;
+
+  // Extract video ID from sources (use first source's docId)
+  const videoId = sources?.[0]?.docId;
 
   return {
     systemPrompt,
     contextPrompt,
     sources,
     selectedLecture: effectiveTitle,
+    videoId,
   };
 }
 

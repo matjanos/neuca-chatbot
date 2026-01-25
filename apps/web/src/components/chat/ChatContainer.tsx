@@ -14,6 +14,7 @@ interface ChatContainerProps {
   error?: Error
   retry?: () => void
   clearError?: () => void
+  videoId?: string | null
 }
 
 // Helper to extract text content from a message
@@ -56,6 +57,7 @@ export function ChatContainer({
   error,
   retry,
   clearError,
+  videoId,
 }: ChatContainerProps) {
   const lastMessage = messages[messages.length - 1]
 
@@ -90,6 +92,7 @@ export function ChatContainer({
         error={error}
         onRetry={retry}
         onDismissError={clearError}
+        videoId={videoId}
       />
       <InputBar
         value={input}

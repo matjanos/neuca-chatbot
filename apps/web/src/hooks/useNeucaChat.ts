@@ -4,12 +4,29 @@ import { useCallback, useRef, useState } from 'react'
 
 export function useNeucaChat() {
   const [input, setInput] = useState('')
+  const [videoId, setVideoId] = useState<string | null>(null)
   const lastUserMessageRef = useRef<string>('')
+
+  // Create custom fetch that captures video ID from response headers
+  const customFetch = useCallback(async (url: string | URL | Request, options?: RequestInit) => {
+    const response = await fetch(url, options)
+
+    // Extract video ID from response headers
+    const vid = response.headers.get('X-Video-Id')
+    if (vid) {
+      setVideoId(vid)
+    }
+
+    return response
+  }, [])
 
   // Create stable transport - only once
   const transportRef = useRef<DefaultChatTransport<UIMessage> | null>(null)
   if (!transportRef.current) {
-    transportRef.current = new DefaultChatTransport<UIMessage>({ api: '/api/chat' })
+    transportRef.current = new DefaultChatTransport<UIMessage>({
+      api: '/api/chat',
+      fetch: customFetch,
+    })
   }
 
   // Create stable Chat instance - only once
@@ -74,5 +91,6 @@ export function useNeucaChat() {
     error,
     retry,
     clearError,
+    videoId,
   }
 }

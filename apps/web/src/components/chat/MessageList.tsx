@@ -14,6 +14,7 @@ interface MessageListProps {
   error?: Error
   onRetry?: () => void
   onDismissError?: () => void
+  videoId?: string | null
 }
 
 // Helper to check if message has visible content (text or non-empty reasoning)
@@ -41,7 +42,8 @@ export function MessageList({
   reasoningContent,
   error,
   onRetry,
-  onDismissError
+  onDismissError,
+  videoId,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -65,7 +67,7 @@ export function MessageList({
     <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
       <div className="max-w-3xl mx-auto space-y-3">
         {visibleMessages.map((message) => (
-          <Message key={message.id} message={message} />
+          <Message key={message.id} message={message} videoId={videoId} />
         ))}
 
         {showTypingIndicator && (
