@@ -266,24 +266,35 @@ app.post('/api/chat', async (c) => {
 
       const reader = originalBody.getReader();
       let bytesStreamed = 0;
+      let isClosed = false;
 
       const wrappedStream = new ReadableStream({
         async pull(controller) {
+          if (isClosed) {
+            return;
+          }
           try {
             const { done, value } = await reader.read();
             if (done) {
-              console.log(`[${requestId}] Stream completed successfully, total bytes: ${bytesStreamed}`);
-              controller.close();
+              if (!isClosed) {
+                isClosed = true;
+                console.log(`[${requestId}] Stream completed successfully, total bytes: ${bytesStreamed}`);
+                controller.close();
+              }
               return;
             }
             bytesStreamed += value.length;
             controller.enqueue(value);
           } catch (error) {
-            console.error(`[${requestId}] Error during streaming (bytes so far: ${bytesStreamed}):`, error);
-            controller.error(error);
+            if (!isClosed) {
+              isClosed = true;
+              console.error(`[${requestId}] Error during streaming (bytes so far: ${bytesStreamed}):`, error);
+              controller.error(error);
+            }
           }
         },
         cancel(reason) {
+          isClosed = true;
           console.log(`[${requestId}] Stream cancelled (bytes streamed: ${bytesStreamed}):`, reason);
           reader.cancel(reason);
         },
