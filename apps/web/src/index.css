@@ -42,3 +42,97 @@ body {
 .bg-gradient-radial {
   background: radial-gradient(ellipse at center, var(--tw-gradient-stops));
 }
+
+/* ========================================
+   Voice Assistant Page
+   ======================================== */
+
+/* Main container */
+.voice-page {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f8fafc 0%, #e0f2fe 100%);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Subtle grid pattern */
+.voice-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 159, 188, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 159, 188, 0.04) 1px, transparent 1px);
+  background-size: 50px 50px;
+  pointer-events: none;
+}
+
+/* Mascot positioned at top center */
+.voice-mascot-top {
+  position: absolute;
+  top: 20%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+}
+
+/* Glass backdrop behind widget - centered below mascot */
+.voice-widget-backdrop {
+  position: fixed;
+  top: 48%;
+  left: 50%;
+  transform: translate(-50%, -30%);
+  width: 420px;
+  height: 320px;
+  background: rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 1.5rem;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  z-index: 5;
+}
+
+/* Move ElevenLabs widget from corner to center */
+.voice-page elevenlabs-convai {
+  position: fixed !important;
+  bottom: auto !important;
+  right: auto !important;
+  top: 38% !important;
+  left: 50% !important;
+  transform: translate(-50%, -30%) !important;
+  z-index: 10;
+  width: 400px !important;
+  height: 400px !important;
+}
+
+
+
+/* Back button at bottom */
+.voice-back-btn {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.75rem 1.5rem;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 159, 188, 0.2);
+  border-radius: 9999px;
+  color: #007A94;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  z-index: 100;
+}
+
+.voice-back-btn:hover {
+  background: #fff;
+  border-color: rgba(0, 159, 188, 0.4);
+  box-shadow: 0 8px 30px rgba(0, 159, 188, 0.15);
+}

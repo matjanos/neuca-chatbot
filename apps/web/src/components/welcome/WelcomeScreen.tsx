@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Mascot } from '../mascot/Mascot'
 import { SuggestionChip } from './SuggestionChip'
 
@@ -126,6 +127,14 @@ export function WelcomeScreen({ onSuggestionClick }: WelcomeScreenProps) {
               />
             ))}
           </div>
+
+          {/* Voice assistant link */}
+          <Link
+            to="/voice"
+            className="mt-8 text-2xl hover:scale-110 transition-transform"
+          >
+            💣
+          </Link>
         </div>
       </div>
     </div>
