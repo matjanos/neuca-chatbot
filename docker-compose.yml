@@ -10,3 +10,58 @@ services:
       - ./qdrant_data:/qdrant/storage
     environment:
       - QDRANT__LOG_LEVEL=INFO
+    networks:
+      - neuca-network
+
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    container_name: neuca-presidio-analyzer
+    restart: unless-stopped
+    ports:
+      - "5002:5002"
+    environment:
+      - GRPC_PORT=5001
+    networks:
+      - neuca-network
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: neuca-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - QDRANT_URL=http://qdrant:6333
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ASSEMBLYAI_API_KEY=${ASSEMBLYAI_API_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - PRESIDIO_ANALYZER_URL=http://presidio-analyzer:5002
+    depends_on:
+      - qdrant
+      - presidio-analyzer
+    networks:
+      - neuca-network
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: neuca-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      - API_URL=http://api:3000
+    depends_on:
+      - api
+    networks:
+      - neuca-network
+
+networks:
+  neuca-network:
+    driver: bridge

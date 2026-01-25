@@ -9,6 +9,10 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.18",
+    "@langfuse/otel": "^4.5.1",
+    "@langfuse/tracing": "^4.5.1",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-node": "^0.211.0",
     "@qdrant/js-client-rest": "^1.16.2",
     "ai": "^6.0.48",
     "hono": "^4.7.7"

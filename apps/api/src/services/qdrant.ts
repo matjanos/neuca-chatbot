@@ -1,6 +1,9 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
 import type { ChunkPayload, SearchResult } from '../types.js';
 import { RAG_CONFIG } from '../config.js';
+
+const tracer = trace.getTracer('qdrant');
 
 const DEFAULT_QDRANT_URL = 'http://localhost:6333';
 const COLLECTION_NAME = 'transcripts';
@@ -37,30 +40,67 @@ export async function searchSimilar(
   options: {
     title?: string;
     limit?: number;
+    query?: string; // Original query text for tracing
   } = {}
 ): Promise<SearchResult[]> {
-  const { title, limit = RAG_CONFIG.topK } = options;
+  const { title, limit = RAG_CONFIG.topK, query } = options;
 
-  const filter: { must: Array<{ key: string; match: { value: string } }> } = { must: [] };
+  return tracer.startActiveSpan('qdrant.search', async (span) => {
+    try {
+      // Input: structured search parameters
+      const inputData = {
+        query: query || null,
+        collection: COLLECTION_NAME,
+        limit,
+        filter: title ? { title } : null,
+        vector_dimensions: queryVector.length,
+      };
+      span.setAttribute('input.value', JSON.stringify(inputData));
 
-  if (title) {
-    filter.must.push({
-      key: 'title',
-      match: { value: title },
-    });
-  }
+      const filter: { must: Array<{ key: string; match: { value: string } }> } = { must: [] };
 
-  const results = await getQdrantClient().search(COLLECTION_NAME, {
-    vector: queryVector,
-    filter: filter.must.length > 0 ? filter : undefined,
-    limit,
-    with_payload: true,
+      if (title) {
+        filter.must.push({
+          key: 'title',
+          match: { value: title },
+        });
+      }
+
+      const results = await getQdrantClient().search(COLLECTION_NAME, {
+        vector: queryVector,
+        filter: filter.must.length > 0 ? filter : undefined,
+        limit,
+        with_payload: true,
+      });
+
+      // Output: search results with scores and content preview
+      const outputData = {
+        results_count: results.length,
+        results: results.map((r, i) => {
+          const payload = r.payload as unknown as ChunkPayload;
+          return {
+            rank: i + 1,
+            score: r.score,
+            speaker: payload.speaker,
+            time_range: `${payload.startSec}-${payload.endSec}s`,
+            text_preview: payload.text.substring(0, 200) + (payload.text.length > 200 ? '...' : ''),
+          };
+        }),
+      };
+      span.setAttribute('output.value', JSON.stringify(outputData));
+      span.setStatus({ code: SpanStatusCode.OK });
+
+      return results.map((r) => ({
+        payload: r.payload as unknown as ChunkPayload,
+        score: r.score,
+      }));
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+      throw error;
+    } finally {
+      span.end();
+    }
   });
-
-  return results.map((r) => ({
-    payload: r.payload as unknown as ChunkPayload,
-    score: r.score,
-  }));
 }
 
 /** Get collection statistics */

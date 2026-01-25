@@ -1,12 +1,17 @@
+import './telemetry.js';
+
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
 import { SERVER_CONFIG, MODEL_CONFIG } from './config.js';
 import type { CompletionRequest, CompletionResponse } from './types.js';
 import { processMessage, processMessageStream, prepareRAGContext } from './agent/lecture-qa.js';
 import { checkConnection, getCollectionStats } from './services/qdrant.js';
 import * as memory from './services/memory.js';
+
+const tracer = trace.getTracer('api');
 
 const app = new Hono();
 
@@ -61,99 +66,120 @@ type ChatMessage = UIMessageFormat | LegacyMessageFormat;
  * Works with useChat hook from @ai-sdk/react
  */
 app.post('/api/chat', async (c) => {
-  try {
-    const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = await c.req.json();
+  return tracer.startActiveSpan('chat.request', async (span) => {
+    try {
+      const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = await c.req.json();
 
-    if (!messages || !Array.isArray(messages)) {
-      return c.json({ error: 'messages array is required' }, 400);
-    }
-
-    // Get the last user message
-    const lastMessage = messages[messages.length - 1];
-    if (!lastMessage || lastMessage.role !== 'user') {
-      return c.json({ error: 'Last message must be from user' }, 400);
-    }
-
-    // Extract text from parts (new format) or content (legacy format)
-    let userText = '';
-    if ('parts' in lastMessage && Array.isArray(lastMessage.parts)) {
-      userText = lastMessage.parts
-        .filter((p: { type: string }): p is { type: 'text'; text: string } => p.type === 'text')
-        .map((p: { type: 'text'; text: string }) => p.text)
-        .join('');
-    } else if ('content' in lastMessage && typeof lastMessage.content === 'string') {
-      userText = lastMessage.content;
-    }
-
-    if (!userText) {
-      return c.json({ error: 'User message must contain text' }, 400);
-    }
-
-    // Prepare RAG context (search, build system prompt)
-    const ragContext = await prepareRAGContext(userText, lectureTitle);
-
-    // Build messages with RAG context injected
-    const systemMessages = [
-      { role: 'system' as const, content: ragContext.systemPrompt },
-    ];
-
-    if (ragContext.contextPrompt) {
-      systemMessages.push({
-        role: 'system' as const,
-        content: ragContext.contextPrompt,
-      });
-    }
-
-    // Convert messages to simple text format
-    // This bypasses convertToModelMessages which creates internal references to reasoning items
-    const conversationMessages = messages.map((msg) => {
-      let textContent = '';
-
-      if ('parts' in msg && Array.isArray(msg.parts)) {
-        // Extract only text content from parts
-        textContent = msg.parts
-          .filter((p): p is TextPart => p.type === 'text' && typeof p.text === 'string')
-          .map((p) => p.text)
-          .join('');
-      } else if ('content' in msg && typeof msg.content === 'string') {
-        textContent = msg.content;
+      if (!messages || !Array.isArray(messages)) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'messages array is required' });
+        span.end();
+        return c.json({ error: 'messages array is required' }, 400);
       }
 
-      return {
-        role: msg.role as 'user' | 'assistant',
-        content: textContent,
-      };
-    });
+      // Get the last user message
+      const lastMessage = messages[messages.length - 1];
+      if (!lastMessage || lastMessage.role !== 'user') {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'Last message must be from user' });
+        span.end();
+        return c.json({ error: 'Last message must be from user' }, 400);
+      }
 
-    // Combine system messages with conversation
-    const allMessages = [...systemMessages, ...conversationMessages];
+      // Extract text from parts (new format) or content (legacy format)
+      let userText = '';
+      if ('parts' in lastMessage && Array.isArray(lastMessage.parts)) {
+        userText = lastMessage.parts
+          .filter((p: { type: string }): p is { type: 'text'; text: string } => p.type === 'text')
+          .map((p: { type: 'text'; text: string }) => p.text)
+          .join('');
+      } else if ('content' in lastMessage && typeof lastMessage.content === 'string') {
+        userText = lastMessage.content;
+      }
 
-    const result = streamText({
-      model: openai(MODEL_CONFIG.model),
-      providerOptions: {
-        openai: {
-          reasoningEffort: MODEL_CONFIG.reasoningEffort,
+      if (!userText) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'User message must contain text' });
+        span.end();
+        return c.json({ error: 'User message must contain text' }, 400);
+      }
+
+      // Input: user message
+      span.setAttribute('input.value', userText);
+
+      // Prepare RAG context (search, build system prompt)
+      const ragContext = await prepareRAGContext(userText, lectureTitle);
+
+      // Build messages with RAG context injected
+      const systemMessages = [
+        { role: 'system' as const, content: ragContext.systemPrompt },
+      ];
+
+      if (ragContext.contextPrompt) {
+        systemMessages.push({
+          role: 'system' as const,
+          content: ragContext.contextPrompt,
+        });
+      }
+
+      // Convert messages to simple text format
+      // This bypasses convertToModelMessages which creates internal references to reasoning items
+      const conversationMessages = messages.map((msg) => {
+        let textContent = '';
+
+        if ('parts' in msg && Array.isArray(msg.parts)) {
+          // Extract only text content from parts
+          textContent = msg.parts
+            .filter((p): p is TextPart => p.type === 'text' && typeof p.text === 'string')
+            .map((p) => p.text)
+            .join('');
+        } else if ('content' in msg && typeof msg.content === 'string') {
+          textContent = msg.content;
+        }
+
+        return {
+          role: msg.role as 'user' | 'assistant',
+          content: textContent,
+        };
+      });
+
+      // Combine system messages with conversation
+      const allMessages = [...systemMessages, ...conversationMessages];
+
+      const result = streamText({
+        model: openai(MODEL_CONFIG.model),
+        providerOptions: {
+          openai: {
+            reasoningEffort: MODEL_CONFIG.reasoningEffort,
+          },
         },
-      },
-      messages: allMessages,
-    });
+        messages: allMessages,
+        experimental_telemetry: { isEnabled: true },
+        onFinish: ({ text }) => {
+          // Output: response
+          span.setAttribute('output.value', text);
+          span.setStatus({ code: SpanStatusCode.OK });
+          span.end();
+        },
+      });
 
-    // Get the streaming response
-    const response = result.toUIMessageStreamResponse({
-      sendReasoning: true,
-    });
+      // Get the streaming response
+      const response = result.toUIMessageStreamResponse({
+        sendReasoning: true,
+      });
 
-    // Add video context headers for timestamp linking
-    if (ragContext.videoId) {
-      response.headers.set('X-Video-Id', ragContext.videoId);
+      // Add video context headers for timestamp linking
+      if (ragContext.videoId) {
+        response.headers.set('X-Video-Id', ragContext.videoId);
+      }
+
+      return response;
+    } catch (error) {
+      console.error('Error processing chat:', error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      span.setAttribute('output.value', JSON.stringify({ error: message }));
+      span.setStatus({ code: SpanStatusCode.ERROR, message });
+      span.end();
+      return c.json({ error: message }, 500);
     }
-
-    return response;
-  } catch (error) {
-    console.error('Error processing chat:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return c.json({ error: message }, 500);
-  }
+  });
 });
 
 /**

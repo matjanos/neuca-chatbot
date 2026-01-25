@@ -1,11 +1,14 @@
 import { openai } from '@ai-sdk/openai';
 import { generateText, streamText } from 'ai';
 import type { ModelMessage } from 'ai';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
 import { MODEL_CONFIG } from '../config.js';
 import type { Source, SearchResult } from '../types.js';
 import { generateQueryEmbedding } from '../services/embedding.js';
 import { searchSimilar, listLectures } from '../services/qdrant.js';
 import * as memory from '../services/memory.js';
+
+const tracer = trace.getTracer('lecture-qa');
 
 /** Build context string from search results */
 function buildContext(results: SearchResult[]): string {
@@ -172,6 +175,7 @@ async function prepareContext(
   const queryVector = await generateQueryEmbedding(userMessage);
   const searchResults = await searchSimilar(queryVector, {
     title: effectiveTitle,
+    query: userMessage,
   });
   const context = buildContext(searchResults);
 
@@ -227,6 +231,7 @@ export async function processMessage(
       },
     },
     messages: prepared.messages,
+    experimental_telemetry: { isEnabled: true },
   });
 
   memory.addMessage(prepared.conversationId, { role: 'assistant', content: text });
@@ -268,6 +273,7 @@ export async function processMessageStream(
       },
     },
     messages: prepared.messages,
+    experimental_telemetry: { isEnabled: true },
     onFinish: async ({ text }) => {
       memory.addMessage(prepared.conversationId, { role: 'assistant', content: text });
     },
@@ -301,47 +307,78 @@ export async function prepareRAGContext(
   userMessage: string,
   lectureTitle?: string
 ): Promise<RAGContext> {
-  // Determine effective lecture title
-  let effectiveTitle = lectureTitle;
+  return tracer.startActiveSpan('rag.prepare', async (span) => {
+    try {
+      // Input: query and filter parameters
+      const inputData = {
+        query: userMessage,
+        lecture_filter: lectureTitle || null,
+      };
+      span.setAttribute('input.value', JSON.stringify(inputData));
 
-  if (!effectiveTitle) {
-    const availableLectures = await listLectures();
-    if (availableLectures.length === 1) {
-      effectiveTitle = availableLectures[0];
+      // Determine effective lecture title
+      let effectiveTitle = lectureTitle;
+
+      if (!effectiveTitle) {
+        const availableLectures = await listLectures();
+        if (availableLectures.length === 1) {
+          effectiveTitle = availableLectures[0];
+        }
+        // If multiple lectures and none specified, we proceed without filtering
+      }
+
+      // Get all available lectures for the system prompt
+      const allLectures = await listLectures();
+
+      // Generate embedding and search
+      const queryVector = await generateQueryEmbedding(userMessage);
+      const searchResults = await searchSimilar(queryVector, {
+        title: effectiveTitle,
+        query: userMessage,
+      });
+      const context = buildContext(searchResults);
+
+      // Build system prompt (include lecture list so model can answer meta-questions)
+      const systemPrompt = await buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
+
+      // Build context prompt if we have results
+      const contextPrompt = context
+        ? `Odpowiednie fragmenty transkrypcji:\n\n${context}`
+        : undefined;
+
+      const sources = searchResults.length > 0 ? extractSources(searchResults) : undefined;
+
+      // Extract video ID from sources (use first source's docId)
+      const videoId = sources?.[0]?.docId;
+
+      // Output: RAG context summary
+      const outputData = {
+        selected_lecture: effectiveTitle || null,
+        sources_count: sources?.length ?? 0,
+        has_context: context.length > 0,
+        context_length: context.length,
+        sources_summary: sources?.map(s => ({
+          speaker: s.speaker,
+          time_range: `${s.startSec}-${s.endSec}s`,
+        })) || [],
+      };
+      span.setAttribute('output.value', JSON.stringify(outputData));
+      span.setStatus({ code: SpanStatusCode.OK });
+
+      return {
+        systemPrompt,
+        contextPrompt,
+        sources,
+        selectedLecture: effectiveTitle,
+        videoId,
+      };
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+      throw error;
+    } finally {
+      span.end();
     }
-    // If multiple lectures and none specified, we proceed without filtering
-  }
-
-  // Get all available lectures for the system prompt
-  const allLectures = await listLectures();
-
-  // Generate embedding and search
-  const queryVector = await generateQueryEmbedding(userMessage);
-  const searchResults = await searchSimilar(queryVector, {
-    title: effectiveTitle,
   });
-  const context = buildContext(searchResults);
-
-  // Build system prompt (include lecture list so model can answer meta-questions)
-  const systemPrompt = await buildSystemPrompt(effectiveTitle, context.length > 0, allLectures);
-
-  // Build context prompt if we have results
-  const contextPrompt = context
-    ? `Odpowiednie fragmenty transkrypcji:\n\n${context}`
-    : undefined;
-
-  const sources = searchResults.length > 0 ? extractSources(searchResults) : undefined;
-
-  // Extract video ID from sources (use first source's docId)
-  const videoId = sources?.[0]?.docId;
-
-  return {
-    systemPrompt,
-    contextPrompt,
-    sources,
-    selectedLecture: effectiveTitle,
-    videoId,
-  };
 }
 
 /** Try to match user input to a lecture title */
