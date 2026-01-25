@@ -34,6 +34,108 @@ export async function checkConnection(): Promise<boolean> {
   }
 }
 
+/** Fetch specific chunks by datasetId and chunkIndex */
+async function fetchChunksByIndex(
+  requests: Array<{ datasetId: string; chunkIndex: number }>
+): Promise<SearchResult[]> {
+  if (requests.length === 0) {
+    return [];
+  }
+
+  const results: SearchResult[] = [];
+
+  // Batch requests by datasetId for efficiency
+  const byDataset = new Map<string, number[]>();
+  for (const { datasetId, chunkIndex } of requests) {
+    if (!byDataset.has(datasetId)) {
+      byDataset.set(datasetId, []);
+    }
+    byDataset.get(datasetId)!.push(chunkIndex);
+  }
+
+  // Fetch chunks for each dataset
+  for (const [datasetId, indices] of byDataset) {
+    const filter = {
+      must: [
+        { key: 'datasetId', match: { value: datasetId } },
+        { key: 'chunkIndex', match: { any: indices } },
+      ],
+    };
+
+    const scrollResult = await getQdrantClient().scroll(COLLECTION_NAME, {
+      filter,
+      limit: indices.length,
+      with_payload: true,
+    });
+
+    for (const point of scrollResult.points) {
+      results.push({
+        payload: point.payload as unknown as ChunkPayload,
+        score: 0, // Neighbors don't have semantic search scores
+      });
+    }
+  }
+
+  return results;
+}
+
+/** Expand search results with neighboring chunks (prev/next) */
+async function expandWithNeighbors(results: SearchResult[]): Promise<SearchResult[]> {
+  if (results.length === 0) {
+    return results;
+  }
+
+  const neighborsToFetch: Array<{ datasetId: string; chunkIndex: number }> = [];
+  const existingIndices = new Set<string>(); // "datasetId:chunkIndex"
+
+  // Collect existing chunk indices
+  for (const result of results) {
+    const key = `${result.payload.datasetId}:${result.payload.chunkIndex}`;
+    existingIndices.add(key);
+  }
+
+  // Collect neighbor indices to fetch
+  for (const result of results) {
+    const { datasetId, prevChunkIndex, nextChunkIndex } = result.payload;
+
+    if (prevChunkIndex !== null) {
+      const key = `${datasetId}:${prevChunkIndex}`;
+      if (!existingIndices.has(key)) {
+        neighborsToFetch.push({ datasetId, chunkIndex: prevChunkIndex });
+        existingIndices.add(key); // Avoid duplicate fetches
+      }
+    }
+
+    if (nextChunkIndex !== null) {
+      const key = `${datasetId}:${nextChunkIndex}`;
+      if (!existingIndices.has(key)) {
+        neighborsToFetch.push({ datasetId, chunkIndex: nextChunkIndex });
+        existingIndices.add(key);
+      }
+    }
+  }
+
+  if (neighborsToFetch.length === 0) {
+    return results;
+  }
+
+  console.log(`[qdrant] Fetching ${neighborsToFetch.length} neighboring chunks`);
+  const neighbors = await fetchChunksByIndex(neighborsToFetch);
+
+  // Merge and sort: original results first (by score), then neighbors (by chunkIndex)
+  const allResults = [...results, ...neighbors];
+
+  // Sort by: primary score desc, secondary chunkIndex asc
+  allResults.sort((a, b) => {
+    if (a.score !== b.score) {
+      return b.score - a.score; // Higher scores first
+    }
+    return a.payload.chunkIndex - b.payload.chunkIndex; // Then by chunk order
+  });
+
+  return allResults;
+}
+
 /** Search for similar chunks by vector */
 export async function searchSimilar(
   queryVector: number[],
@@ -41,11 +143,17 @@ export async function searchSimilar(
     title?: string;
     limit?: number;
     query?: string; // Original query text for tracing
+    expandNeighbors?: boolean; // Whether to fetch prev/next chunks
   } = {}
 ): Promise<SearchResult[]> {
-  const { title, limit = RAG_CONFIG.topK, query } = options;
+  const {
+    title,
+    limit = RAG_CONFIG.topK,
+    query,
+    expandNeighbors = RAG_CONFIG.expandWithNeighbors,
+  } = options;
   const startTime = Date.now();
-  console.log(`[qdrant] Searching for "${query?.slice(0, 50) ?? 'no query'}...", title filter: ${title ?? 'none'}, limit: ${limit}`);
+  console.log(`[qdrant] Searching for "${query?.slice(0, 50) ?? 'no query'}...", title filter: ${title ?? 'none'}, limit: ${limit}, expand: ${expandNeighbors}`);
 
   return tracer.startActiveSpan('qdrant.search', async (span) => {
     try {
@@ -56,6 +164,7 @@ export async function searchSimilar(
         limit,
         filter: title ? { title } : null,
         vector_dimensions: queryVector.length,
+        expand_neighbors: expandNeighbors,
       };
       span.setAttribute('input.value', JSON.stringify(inputData));
 
@@ -80,27 +189,37 @@ export async function searchSimilar(
         console.log(`[qdrant] Top result score: ${results[0].score.toFixed(4)}`);
       }
 
+      let finalResults = results.map((r) => ({
+        payload: r.payload as unknown as ChunkPayload,
+        score: r.score,
+      }));
+
+      // Expand with neighbors if enabled
+      if (expandNeighbors) {
+        finalResults = await expandWithNeighbors(finalResults);
+        console.log(`[qdrant] Expanded to ${finalResults.length} total chunks (including neighbors)`);
+      }
+
       // Output: search results with scores and content preview
       const outputData = {
-        results_count: results.length,
-        results: results.map((r, i) => {
-          const payload = r.payload as unknown as ChunkPayload;
+        results_count: finalResults.length,
+        original_count: results.length,
+        expanded: expandNeighbors,
+        results: finalResults.slice(0, 5).map((r, i) => {
           return {
             rank: i + 1,
             score: r.score,
-            speaker: payload.speaker,
-            time_range: `${payload.startSec}-${payload.endSec}s`,
-            text_preview: payload.text.substring(0, 200) + (payload.text.length > 200 ? '...' : ''),
+            chunk_index: r.payload.chunkIndex,
+            speaker: r.payload.speaker,
+            time_range: `${r.payload.startSec}-${r.payload.endSec}s`,
+            text_preview: r.payload.text.substring(0, 200) + (r.payload.text.length > 200 ? '...' : ''),
           };
         }),
       };
       span.setAttribute('output.value', JSON.stringify(outputData));
       span.setStatus({ code: SpanStatusCode.OK });
 
-      return results.map((r) => ({
-        payload: r.payload as unknown as ChunkPayload,
-        score: r.score,
-      }));
+      return finalResults;
     } catch (error) {
       console.error(`[qdrant] Search error:`, error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });

@@ -16,10 +16,12 @@ export const EMBEDDING_CONFIG = {
 
 /** RAG configuration */
 export const RAG_CONFIG = {
-  /** Number of chunks to retrieve */
-  topK: 8,
+  /** Number of chunks to retrieve from semantic search */
+  topK: 5,
   /** Minimum similarity score threshold (lower = more results for general questions) */
   scoreThreshold: 0.3,
+  /** Whether to fetch neighboring chunks (prev/next) for context expansion */
+  expandWithNeighbors: true,
 };
 
 /** Server configuration */

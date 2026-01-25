@@ -16,8 +16,12 @@ const tracer = trace.getTracer('api');
 
 const app = new Hono();
 
-// Enable CORS
-app.use('*', cors());
+// Enable CORS for frontend
+app.use('*', cors({
+  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  credentials: true,
+  exposeHeaders: ['X-Video-Id'], // Expose custom headers so frontend can read them
+}));
 
 // Health check endpoint
 app.get('/health', async (c) => {
@@ -212,7 +216,10 @@ app.post('/api/chat', async (c) => {
           }
 
           result = streamText({
-            model: openai(MODEL_CONFIG.model),
+            model: openai(MODEL_CONFIG.model, {
+              structuredOutputs: true,
+            }),
+            maxRetries: 2, // AI SDK will retry failed requests automatically
             providerOptions: {
               openai: {
                 reasoningEffort: MODEL_CONFIG.reasoningEffort,
@@ -226,6 +233,9 @@ app.post('/api/chat', async (c) => {
               span.setAttribute('output.value', text);
               span.setStatus({ code: SpanStatusCode.OK });
               span.end();
+            },
+            onError: (error) => {
+              console.error(`[${requestId}] streamText onError:`, error);
             },
           });
 
@@ -253,65 +263,21 @@ app.post('/api/chat', async (c) => {
 
       // Get the streaming response
       console.log(`[${requestId}] Creating UI message stream response...`);
-      const originalResponse = result.toUIMessageStreamResponse({
+      const response = result.toUIMessageStreamResponse({
         sendReasoning: true,
-      });
-
-      // Wrap the response stream to log any errors during streaming
-      const originalBody = originalResponse.body;
-      if (!originalBody) {
-        console.error(`[${requestId}] Response has no body!`);
-        throw new Error('Response has no body');
-      }
-
-      const reader = originalBody.getReader();
-      let bytesStreamed = 0;
-      let isClosed = false;
-
-      const wrappedStream = new ReadableStream({
-        async pull(controller) {
-          if (isClosed) {
-            return;
-          }
-          try {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (!isClosed) {
-                isClosed = true;
-                console.log(`[${requestId}] Stream completed successfully, total bytes: ${bytesStreamed}`);
-                controller.close();
-              }
-              return;
-            }
-            bytesStreamed += value.length;
-            controller.enqueue(value);
-          } catch (error) {
-            if (!isClosed) {
-              isClosed = true;
-              console.error(`[${requestId}] Error during streaming (bytes so far: ${bytesStreamed}):`, error);
-              controller.error(error);
-            }
-          }
-        },
-        cancel(reason) {
-          isClosed = true;
-          console.log(`[${requestId}] Stream cancelled (bytes streamed: ${bytesStreamed}):`, reason);
-          reader.cancel(reason);
-        },
-      });
-
-      const response = new Response(wrappedStream, {
-        status: originalResponse.status,
-        statusText: originalResponse.statusText,
-        headers: originalResponse.headers,
       });
 
       console.log(`[${requestId}] Response created, returning stream to client`);
 
-      // Add video context headers for timestamp linking
+      // Add video context header for timestamp linking
       if (ragContext.videoId) {
         response.headers.set('X-Video-Id', ragContext.videoId);
       }
+
+      // Ensure proper streaming headers
+      response.headers.set('Cache-Control', 'no-cache, no-transform');
+      response.headers.set('Connection', 'keep-alive');
+      response.headers.set('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
       return response;
     } catch (error) {

@@ -22,8 +22,8 @@ graph TB
         I -->|Blocked| J[Error: PII Detected]
         I -->|Passed| K[Generate Query<br/>Embedding]
         K --> L[Semantic Search<br/>Qdrant]
-        L --> M[Retrieve Top 8<br/>Relevant Chunks]
-        M --> N[Build RAG Context<br/>with Sources]
+        L --> M[Retrieve Top 5<br/>+ Neighbors]
+        M --> N[Build RAG Context<br/>~15 chunks with flow]
         N --> O[GPT-5-mini<br/>Generate Answer]
         O --> P[Stream Response<br/>with Citations]
     end
@@ -103,10 +103,10 @@ sequenceDiagram
     API->>OpenAI: Generate query embedding
     OpenAI-->>API: [0.123, -0.456, ..., 0.789]
 
-    API->>Qdrant: Semantic search<br/>topK=8, threshold=0.3
-    Qdrant-->>API: 8 chunks with scores
+    API->>Qdrant: Semantic search<br/>topK=5, threshold=0.3
+    Qdrant-->>API: 5 chunks + neighbors
 
-    Note over API: Build context:<br/>[1] Speaker A [00:12]<br/>[2] Speaker B [01:30]<br/>...
+    Note over API: Context expansion:<br/>Fetch prev/next chunks<br/>Total: ~15 chunks<br/>Preserves conversation flow
 
     API->>OpenAI: Generate answer<br/>+ RAG context
     OpenAI-->>API: Stream response
@@ -363,6 +363,13 @@ graph TB
     style COST fill:#fd79a8
 ```
 
+**⚠️ Privacy & Data Sovereignty:**
+- **Langfuse is Open Source** (MIT License) - can be self-hosted locally
+- **No Vendor Lock-In** - Full control over observability data
+- **Current Setup:** Langfuse Cloud (demo/development)
+- **Production Option:** Self-host with Docker + PostgreSQL
+- **Benefit:** Zero data leakage to third parties, full compliance with data residency requirements
+
 ---
 
 ## 9. Multi-Lecture Architecture
@@ -459,7 +466,7 @@ flowchart TD
     D -->|No| E[No Relevant Context Found]
     E --> F["Response: 'Nie mam informacji<br/>o tym w dostępnych nagraniach'"]
 
-    D -->|Yes| G[Retrieve Top 8 Chunks]
+    D -->|Yes| G[Retrieve Top 5 Chunks<br/>+ Neighbors]
     G --> H{Chunks Contain<br/>Answer?}
 
     H -->|Uncertain| I["LLM Check:<br/>'Can you answer<br/>this question?'"]
@@ -572,6 +579,82 @@ graph LR
     style G fill:#00b894
     style F fill:#ffeaa7
 ```
+
+---
+
+## 16. RAG Context Expansion Strategy
+
+```mermaid
+flowchart TB
+    A[User Query:<br/>"Co mówił Speaker A?"] --> B[Generate Query<br/>Embedding]
+    B --> C[Semantic Search<br/>Qdrant]
+
+    C --> D[Top 5 Results:<br/>Score-Ranked]
+
+    subgraph "Primary Results"
+        D1[Chunk 42<br/>Score: 0.85<br/>prevIndex: 41<br/>nextIndex: 43]
+        D2[Chunk 67<br/>Score: 0.78<br/>prevIndex: 66<br/>nextIndex: 68]
+        D3[Chunk 103<br/>Score: 0.71<br/>prevIndex: 102<br/>nextIndex: 104]
+        D4[Chunk 158<br/>Score: 0.65<br/>prevIndex: 157<br/>nextIndex: 159]
+        D5[Chunk 201<br/>Score: 0.61<br/>prevIndex: 200<br/>nextIndex: 202]
+    end
+
+    D --> D1 & D2 & D3 & D4 & D5
+
+    D1 --> E1[Fetch Neighbors:<br/>Chunk 41, 43]
+    D2 --> E2[Fetch Neighbors:<br/>Chunk 66, 68]
+    D3 --> E3[Fetch Neighbors:<br/>Chunk 102, 104]
+    D4 --> E4[Fetch Neighbors:<br/>Chunk 157, 159]
+    D5 --> E5[Fetch Neighbors:<br/>Chunk 200, 202]
+
+    E1 & E2 & E3 & E4 & E5 --> F[Build RAG Context<br/>15 chunks total]
+
+    F --> G[Sort:<br/>1. By score desc<br/>2. By chunkIndex asc]
+
+    G --> H[Send to LLM<br/>with complete context]
+
+    style D1 fill:#ff6b6b
+    style D2 fill:#ff6b6b
+    style D3 fill:#ff6b6b
+    style D4 fill:#ff6b6b
+    style D5 fill:#ff6b6b
+```
+
+### Context Expansion Example
+
+**Before (Top-8, no neighbors):**
+```
+[Chunk 42, score 0.85] "...dlatego uważam, że regulacje"
+[Chunk 67, score 0.78] "w kontekście Polski są kluczowe..."
+[Chunk 103, score 0.71] "AI Act wprowadza nowe wymogi..."
+[Chunk 158, score 0.65] "dyrektywa wymaga od firm..."
+[Chunk 201, score 0.61] "systemy AI wysokiego ryzyka..."
+```
+❌ Mid-sentence chunks, missing context
+
+**After (Top-5 + neighbors):**
+```
+[Chunk 41] "Profesor Jan Kowalski mówił wcześniej o europejskich..."
+[Chunk 42, score 0.85] "...dlatego uważam, że regulacje AI są absolutnie..."
+[Chunk 43] "...niezbędne dla bezpieczeństwa obywateli."
+
+[Chunk 66] "W dyskusji o implementacji..."
+[Chunk 67, score 0.78] "w kontekście Polski są kluczowe, ponieważ..."
+[Chunk 68] "...musimy dostosować się do standardów EU."
+
+[Chunk 102] "Mówiąc o szczegółach legislacji..."
+[Chunk 103, score 0.71] "AI Act wprowadza nowe wymogi dotyczące..."
+[Chunk 104] "...transparentności i audytowalności systemów AI."
+
+[Chunk 157] "Dr Anna Nowak dodała, że..."
+[Chunk 158, score 0.65] "dyrektywa wymaga od firm przeprowadzenia oceny ryzyka..."
+[Chunk 159] "...przed wdrożeniem każdego systemu."
+
+[Chunk 200] "Panel podkreślił również..."
+[Chunk 201, score 0.61] "systemy AI wysokiego ryzyka muszą być certyfikowane..."
+[Chunk 202] "...przez niezależne jednostki notyfikowane."
+```
+✅ Complete thoughts, conversational flow, full context
 
 ---
 

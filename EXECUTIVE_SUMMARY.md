@@ -75,10 +75,12 @@ YouTube URL → Transcribe → Identify Speakers → Create Embeddings → Store
 
 ### 2. User Asks Question
 ```
-Query → PII Check → Semantic Search → Retrieve Top 8 Chunks → AI Generates Answer
+Query → PII Check → Semantic Search → Retrieve Top 5 + Neighbors → AI Generates Answer
 ```
 - Blocks queries containing personal data (GDPR)
-- Finds relevant content by meaning, not keywords
+- Finds top 5 most relevant chunks by semantic similarity (meaning, not keywords)
+- **Context Expansion:** Automatically fetches neighboring chunks (prev + next) for complete context
+- Total context: Up to 15 chunks (preserves conversational flow)
 - GPT-5-mini generates answer from evidence only
 
 ### 3. Verify Source
@@ -129,7 +131,9 @@ Answer with Citation → Click Timestamp → Watch Video at Exact Moment
 - **Vector DB:** Qdrant (semantic search)
 - **Transcription:** AssemblyAI (cloud) + Whisper (local GPU)
 - **Security:** Microsoft Presidio (PII detection)
-- **Observability:** OpenTelemetry + Langfuse
+- **Observability:** OpenTelemetry + Langfuse (open source, self-hostable)
+
+**⚠️ Privacy Note:** Langfuse is open source (MIT license) and can be self-hosted locally to ensure **zero data leakage to third parties**. Current demo uses Langfuse Cloud, but production deployments can run entirely on-premise for full data sovereignty.
 
 ### Performance Metrics (Current)
 | Metric | Value |
@@ -267,9 +271,11 @@ Answer with Citation → Click Timestamp → Watch Video at Exact Moment
 |------|------|
 | OpenAI API (embeddings + LLM) | €300-500 |
 | Hosting (Docker containers) | €50-100 |
-| Qdrant Cloud (optional) | €0-200 |
-| Langfuse Observability | €0-50 |
+| Qdrant Cloud (optional, can self-host) | €0-200 |
+| Langfuse Observability (€0 if self-hosted) | €0-50 |
 | **Total** | **€400-850/month** |
+
+**Note:** Qdrant and Langfuse are both open source and can be self-hosted to reduce costs and ensure data sovereignty.
 
 ### Team Requirements
 - **DevOps:** 0.2 FTE (monitoring, scaling)

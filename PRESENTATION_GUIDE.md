@@ -216,16 +216,20 @@ Bot: "Przepraszam, ale w moim kontekście z panelu dyskusyjnego nie ma szczegó�
 - Answer MUST be grounded in retrieved chunks
 - No retrieval = No answer (safe rejection)
 
-**2. Confidence Thresholds**
+**2. Confidence Thresholds & Context Expansion**
 ```typescript
 RAG_CONFIG = {
-  topK: 8,                    // Retrieve top 8 most relevant chunks
-  scoreThreshold: 0.3         // Minimum similarity score (0-1)
+  topK: 5,                    // Retrieve top 5 most relevant chunks
+  scoreThreshold: 0.3,        // Minimum similarity score (0-1)
+  expandWithNeighbors: true   // Fetch prev/next chunks for context
 }
 ```
+- **Primary Search:** Top 5 chunks by semantic similarity
+- **Context Expansion:** Automatically fetches neighboring chunks (prev + next)
+- **Total Context:** Up to 15 chunks (5 primary + up to 10 neighbors)
 - If no chunk scores above 0.3, system responds: "I don't have information about that"
 - Lower threshold (0.3) allows broader retrieval for general questions
-- Higher threshold (0.5+) would be stricter but miss more queries
+- **Why Neighbors?** Preserves conversational flow, captures complete thoughts, provides before/after context
 
 **3. Refusal Mode**
 System prompt explicitly instructs:
@@ -337,6 +341,55 @@ bun run cli
 - No unnecessary metadata (IP addresses, user IDs, etc.)
 - Embeddings are numerical vectors (not reversible to original text)
 
+### Third-Party Services & Data Sovereignty
+
+**Open Source Components (Self-Hostable):**
+
+1. **Langfuse (Observability)**
+   - **License:** MIT (permissive open source)
+   - **Current Setup:** Langfuse Cloud (https://cloud.langfuse.com)
+   - **Self-Hosting:** Docker deployment with PostgreSQL backend
+   - **Data Sovereignty:** All traces and metrics can stay on-premise
+   - **No Vendor Lock-In:** Full control over observability data
+   - **Deployment Guide:** https://langfuse.com/docs/deployment/self-host
+
+2. **Qdrant (Vector Database)**
+   - **License:** Apache 2.0 (open source)
+   - **Current Setup:** Docker container (localhost)
+   - **Self-Hosting:** Already running locally
+   - **Scalability:** Qdrant Cloud option available but not required
+   - **Data Residency:** All embeddings stored locally
+
+3. **Microsoft Presidio (PII Detection)**
+   - **License:** MIT (open source)
+   - **Current Setup:** Docker container (localhost)
+   - **Self-Hosting:** Already running locally
+   - **No External API:** Runs entirely on-premise
+
+**Third-Party APIs (Requires External Calls):**
+
+1. **OpenAI API**
+   - Required for: Embeddings + LLM generation
+   - Data sent: User queries, transcript chunks (context)
+   - Data retention: Per OpenAI's API data usage policy (30 days for abuse monitoring)
+   - Alternative: Self-hosted LLMs (e.g., Llama 3, Mistral) with vLLM or Ollama
+   - Embedding alternative: sentence-transformers (local models)
+
+**Production Recommendation for Data Sovereignty:**
+- ✅ Self-host Langfuse (zero observability data leakage)
+- ✅ Self-host Qdrant (already implemented)
+- ✅ Self-host Presidio (already implemented)
+- ⚠️ OpenAI API: Evaluate self-hosted LLM alternatives for strict compliance
+  - Option 1: Azure OpenAI (EU data residency guarantees)
+  - Option 2: Self-hosted Llama 3.1 70B (GPU cluster required)
+  - Option 3: Hybrid: Keep embeddings on OpenAI, self-host LLM
+
+**Compliance Summary:**
+- **Current Demo:** 3/4 services run locally (Qdrant, Presidio, API)
+- **Production Option:** 100% on-premise possible (replace OpenAI with self-hosted LLM)
+- **Data Leakage Risk:** Minimal (only OpenAI API receives query data)
+- **GDPR Compliance:** DPA available from OpenAI for enterprise customers
+
 ---
 
 ## 7. AI Act & Compliance-by-Design
@@ -420,7 +473,7 @@ bun run cli
 
 **Mean Reciprocal Rank (MRR):**
 - **Definition:** How high did the BEST chunk rank?
-- **Target:** MRR > 0.7 (best chunk usually in top 3)
+- **Target:** MRR > 0.7 (best chunk usually in top 5)
 
 **Score Distribution:**
 - Threshold: 0.3 minimum similarity
@@ -532,6 +585,16 @@ Trace: User Query "What did Speaker A say?"
 │  └─ Latency: 2300ms
 └─ Total: 2.955s, $0.00433
 ```
+
+**⚠️ Privacy Note: Langfuse is Open Source**
+- **Current Setup:** Langfuse Cloud (https://cloud.langfuse.com)
+- **Self-Hosting Option:** Can be deployed locally using Docker
+- **No Vendor Lock-In:** Full control over observability data
+- **Data Sovereignty:** All traces can stay on-premise if required for compliance
+- **License:** MIT (permissive open source)
+- **Deployment:** `docker-compose` with PostgreSQL backend
+
+For production with strict data residency requirements, Langfuse can be self-hosted to ensure **zero data leakage to third parties**.
 
 **Key Metrics Tracked:**
 

@@ -55,8 +55,6 @@ services:
     restart: unless-stopped
     ports:
       - "5173:5173"
-    environment:
-      - API_URL=http://api:3000
     depends_on:
       - api
     networks:
