@@ -1,80 +1,172 @@
-# NEUCA YouTube Transcription CLI
+# Neuca Chatbot
 
-A command-line tool for transcribing YouTube videos with speaker identification.
+A YouTube transcription and RAG-powered chatbot system built with Bun workspaces.
 
 ## Features
 
-- Download and transcribe YouTube videos
-- Speaker diarization (identifies different speakers)
-- Multiple transcription providers (AssemblyAI cloud, Whisper local)
-- Interactive speaker naming tool
-- Audio caching for faster re-runs
-- Generate embeddings for RAG retrieval (Qdrant + OpenAI)
+- **YouTube Transcription** - Download and transcribe YouTube videos with speaker diarization
+- **Multiple Transcription Providers** - AssemblyAI (cloud) or Whisper (local with GPU acceleration)
+- **Speaker Identification** - Interactive tool to name speakers by listening to audio samples
+- **Embedding Generation** - Create vector embeddings for RAG retrieval
+- **Chat Interface** - Web UI for querying transcribed content
+- **PII Detection** - Built-in privacy protection using Microsoft Presidio
+
+## Architecture
+
+```
+neuca-chatbot/
+├── apps/
+│   ├── cli/          # Transcription CLI (yt-dlp + Whisper/AssemblyAI)
+│   ├── api/          # Backend API (Hono + OpenAI + Qdrant)
+│   └── web/          # React frontend (Vite + Tailwind)
+├── packages/         # Shared code (placeholder)
+├── output/           # Generated transcripts
+├── temp/             # Audio cache
+└── qdrant_data/      # Vector database persistence
+```
+
+### Data Flow
+
+```
+YouTube URL → yt-dlp (audio) → Whisper/AssemblyAI → Transcript with speakers
+                                                            ↓
+User Query ← LLM Response ← RAG Context ← Qdrant ← Embeddings ← Chunked transcript
+```
+
+## Prerequisites
+
+- [Bun](https://bun.sh) (v1.0+)
+- [Docker](https://docker.com) (for Qdrant and Presidio)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) (auto-installed by CLI)
+- [ffmpeg](https://ffmpeg.org) (for audio processing)
+
+For local Whisper transcription:
+- Python 3.10+
+- For Apple Silicon: `mlx-whisper` (GPU-accelerated)
+- For other systems: `openai-whisper` with PyTorch
 
 ## Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/yourusername/neuca-chatbot.git
+cd neuca-chatbot
+
 # Install dependencies
 bun install
 
-# Create .env file with your API keys
+# Copy environment template
 cp .env.example .env
+# Edit .env with your API keys
 ```
 
-## Configuration
-
-Add to `.env`:
+## Environment Variables
 
 ```bash
-# For AssemblyAI (cloud transcription)
+# Required for cloud transcription
 ASSEMBLYAI_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
 
-# For local Whisper with speaker diarization (optional)
+# Required for local Whisper with speaker diarization
 HF_TOKEN=your_huggingface_token
 
-# For embedding generation
-OPENAI_API_KEY=your_key_here
+# Vector database (defaults shown)
+QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=              # Only for Qdrant Cloud
+
+# API server
+PORT=3000
+
+# PII Detection
+PRESIDIO_ANALYZER_URL=http://localhost:5002
 ```
 
 ## Usage
 
+### Start Infrastructure
+
 ```bash
-bun run cli
+# Start Qdrant and Presidio
+docker compose up -d qdrant presidio-analyzer
 ```
 
-The interactive CLI will guide you through:
-
-1. **Choose action**: Transcribe video, identify speakers, or generate embeddings
-2. **Select model**: AssemblyAI (cloud) or Whisper (local)
-3. **Enter YouTube URL**
-4. **Select language**: Polish, English, German, Portuguese, Ukrainian, Chinese, or auto-detect
-
-Output is saved to `output/transcript-{videoId}-{timestamp}.txt`
-
-## Embedding Generation
-
-Generate vector embeddings for semantic search and RAG applications.
-
-### Prerequisites
-
-Start Qdrant vector database:
+### CLI - Transcription
 
 ```bash
+# Run the interactive CLI
+bun run cli
+
+# Menu options:
+# 1. Transcribe YouTube Video
+# 2. Identify Speakers
+# 3. Generate Embeddings
+```
+
+The CLI guides you through:
+1. **Select action** - Transcribe, identify speakers, or generate embeddings
+2. **Choose provider** - AssemblyAI (cloud) or Whisper (local)
+3. **Enter YouTube URL**
+4. **Select language** - Polish, English, German, Portuguese, Ukrainian, Chinese, or auto-detect
+
+### API Server
+
+```bash
+# Start the API server (development)
+bun run api
+
+# Endpoints:
+# GET  /health     - Health check
+# POST /api/chat   - Chat with RAG context
+```
+
+### Web Interface
+
+```bash
+# Start the web frontend
+bun run web
+
+# Open http://localhost:5173
+```
+
+### Full Stack with Docker
+
+```bash
+# Start all services
 docker compose up -d
 ```
 
-### Usage
+## CLI Commands
 
-Select "Generate embeddings for transcript" from the main menu. The CLI will:
+### Transcribe YouTube Video
 
-1. Check Qdrant connection
-2. Let you select a transcript file
-3. Choose embedding model (text-embedding-3-large recommended)
-4. Choose chunking strategy (balanced, detailed, or overview)
-5. Generate and store embeddings in Qdrant
+1. Enter a YouTube URL
+2. Select transcription provider:
+   - **AssemblyAI** - Cloud API with built-in speaker diarization
+   - **Whisper** - Local GPU-accelerated transcription
+3. Select language (or auto-detect)
+4. Transcript saved to `output/transcript-{videoId}-{timestamp}.txt`
 
-### Verify
+### Identify Speakers
 
+Post-transcription tool to replace generic speaker labels (SPEAKER_00) with names:
+
+1. Select a transcript file
+2. Listen to audio samples from each speaker
+3. Enter speaker names
+4. Save identified transcript
+
+### Generate Embeddings
+
+Convert transcripts into searchable vectors:
+
+1. Select a transcript file
+2. Choose chunking strategy:
+   - **balanced** - Moderate chunk sizes
+   - **detailed** - Smaller chunks for precision
+   - **overview** - Larger chunks for context
+3. Embeddings stored in Qdrant
+
+Verify with:
 ```bash
 curl http://localhost:6333/collections/transcripts
 ```
@@ -100,12 +192,28 @@ Thank you for having me...
 ## Development
 
 ```bash
-# Run tests
+# Run all tests
 bun test
+
+# Run specific test file
+bun test apps/cli/tests/format.test.ts
 
 # Type check
 bun run --cwd apps/cli tsc --noEmit
 ```
+
+## Known Issues
+
+1. **OpenAI Audio API** - Persistent "corrupted audio" errors. Use AssemblyAI or local Whisper instead.
+2. **PyTorch MPS on Apple Silicon** - NaN values during inference. Solved by using `mlx-whisper`.
+3. **Audio Playback** - macOS only (uses `afplay`).
+
+## Documentation
+
+- [CLAUDE.md](./CLAUDE.md) - Development guidance and architecture overview
+- [TECHNICAL_LOG.md](./TECHNICAL_LOG.md) - Architecture decisions and debugging notes
+- [WHISPER_SETUP.md](./WHISPER_SETUP.md) - Local Whisper GPU acceleration guide
+- [DIARIZATION_SETUP.md](./DIARIZATION_SETUP.md) - Hugging Face token setup for speaker diarization
 
 ## License
 
