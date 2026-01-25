@@ -26,3 +26,15 @@ export const RAG_CONFIG = {
 export const SERVER_CONFIG = {
   port: parseInt(process.env.PORT || '3000', 10),
 };
+
+/** PII detection configuration */
+export const PII_CONFIG = {
+  analyzerUrl: process.env.PRESIDIO_ANALYZER_URL || 'http://localhost:5002',
+  /** Use 'en' as default Presidio image only supports English.
+   *  Still detects universal patterns: emails, phones, URLs, credit cards, etc. */
+  language: 'en',
+  /** Higher threshold (0.9) to avoid false positives from English model on Polish text.
+   *  Emails/phones still score 1.0, so they'll be caught. */
+  scoreThreshold: 0.9,
+  enabled: process.env.PII_CHECK_ENABLED !== 'false',
+};

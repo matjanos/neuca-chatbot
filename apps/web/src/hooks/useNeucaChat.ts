@@ -8,16 +8,77 @@ export function useNeucaChat() {
   const lastUserMessageRef = useRef<string>('')
 
   // Create custom fetch that captures video ID from response headers
+  // Includes retry logic for API errors (max 2 retries)
   const customFetch = useCallback(async (url: string | URL | Request, options?: RequestInit) => {
-    const response = await fetch(url, options)
+    const maxRetries = 2
+    let lastError: Error | null = null
 
-    // Extract video ID from response headers
-    const vid = response.headers.get('X-Video-Id')
-    if (vid) {
-      setVideoId(vid)
+    // Helper to check if error is retryable
+    const isRetryable = (error: Error, status?: number): boolean => {
+      // Don't retry user aborts
+      if (error.name === 'AbortError') return false
+      // Don't retry client errors (4xx) - these are intentional rejections
+      if (status && status >= 400 && status < 500) return false
+      // Retry network errors and server errors (5xx)
+      return true
     }
 
-    return response
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          console.log(`Retrying API call (attempt ${attempt + 1}/${maxRetries + 1})...`)
+        }
+
+        const response = await fetch(url, options)
+
+        // Handle error responses (e.g., PII detection)
+        if (!response.ok) {
+          const contentType = response.headers.get('content-type')
+          let errorMessage = `Request failed with status ${response.status}`
+
+          if (contentType?.includes('application/json')) {
+            const errorData = await response.json()
+            errorMessage = errorData.error || errorMessage
+          }
+
+          const error = new Error(errorMessage)
+
+          // Check if this error should be retried
+          if (!isRetryable(error, response.status)) {
+            throw error
+          }
+
+          // For retryable server errors, continue to retry logic below
+          throw error
+        }
+
+        // Extract video ID from response headers
+        const vid = response.headers.get('X-Video-Id')
+        if (vid) {
+          setVideoId(vid)
+        }
+
+        return response
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+
+        // Don't retry non-retryable errors
+        if (!isRetryable(lastError)) {
+          throw lastError
+        }
+
+        console.error(`API call failed (attempt ${attempt + 1}/${maxRetries + 1}):`, lastError.message)
+
+        if (attempt === maxRetries) {
+          throw lastError
+        }
+
+        // Small delay before retry
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
+
+    throw lastError ?? new Error('Failed to get response from API')
   }, [])
 
   // Create stable transport - only once
@@ -49,7 +110,34 @@ export function useNeucaChat() {
       if (!content.trim() || !chatRef.current) return
       lastUserMessageRef.current = content
       setInput('')
-      await chatRef.current.sendMessage({ text: content })
+
+      const maxRetries = 2
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`Retrying message send (attempt ${attempt + 1}/${maxRetries + 1})...`)
+          }
+          await chatRef.current.sendMessage({ text: content })
+          return // Success, exit retry loop
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error))
+
+          // Don't retry user-initiated aborts
+          if (err.name === 'AbortError') {
+            throw err
+          }
+
+          console.error(`Message send failed (attempt ${attempt + 1}/${maxRetries + 1}):`, err.message)
+
+          if (attempt === maxRetries) {
+            throw err
+          }
+
+          // Small delay before retry
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+      }
     },
     []
   )

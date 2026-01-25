@@ -10,6 +10,7 @@ import type { CompletionRequest, CompletionResponse } from './types.js';
 import { processMessage, processMessageStream, prepareRAGContext } from './agent/lecture-qa.js';
 import { checkConnection, getCollectionStats } from './services/qdrant.js';
 import * as memory from './services/memory.js';
+import { analyzePII } from './services/presidio.js';
 
 const tracer = trace.getTracer('api');
 
@@ -101,6 +102,44 @@ app.post('/api/chat', async (c) => {
         return c.json({ error: 'User message must contain text' }, 400);
       }
 
+      // Check for PII before processing
+      const piiResult = await analyzePII(userText);
+
+      if (piiResult.hasPII) {
+        const entityTypes = [...new Set(piiResult.entities.map((e) => e.entity_type))];
+        span.setAttribute('pii.detected', true);
+        span.setAttribute('pii.entity_types', JSON.stringify(entityTypes));
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'PII detected' });
+        span.end();
+
+        const errorMessage = '⚠️ Wykryto dane osobowe w wiadomości. Proszę nie podawać danych osobowych takich jak imiona, nazwiska, adresy email czy numery telefonów.';
+        const textId = `pii-error-${Date.now()}`;
+
+        // Return error as AI SDK UI message stream format
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          start(controller) {
+            // UI message stream format events with correct types
+            controller.enqueue(encoder.encode('data: {"type":"start"}\n\n'));
+            controller.enqueue(encoder.encode('data: {"type":"start-step"}\n\n'));
+            controller.enqueue(encoder.encode(`data: {"type":"text-start","id":"${textId}"}\n\n`));
+            controller.enqueue(encoder.encode(`data: {"type":"text-delta","id":"${textId}","delta":"${errorMessage}"}\n\n`));
+            controller.enqueue(encoder.encode(`data: {"type":"text-end","id":"${textId}"}\n\n`));
+            controller.enqueue(encoder.encode('data: {"type":"finish-step"}\n\n'));
+            controller.enqueue(encoder.encode('data: {"type":"finish"}\n\n'));
+            controller.close();
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
+        });
+      }
+
       // Input: user message
       span.setAttribute('input.value', userText);
 
@@ -143,22 +182,52 @@ app.post('/api/chat', async (c) => {
       // Combine system messages with conversation
       const allMessages = [...systemMessages, ...conversationMessages];
 
-      const result = streamText({
-        model: openai(MODEL_CONFIG.model),
-        providerOptions: {
-          openai: {
-            reasoningEffort: MODEL_CONFIG.reasoningEffort,
-          },
-        },
-        messages: allMessages,
-        experimental_telemetry: { isEnabled: true },
-        onFinish: ({ text }) => {
-          // Output: response
-          span.setAttribute('output.value', text);
-          span.setStatus({ code: SpanStatusCode.OK });
-          span.end();
-        },
-      });
+      // Retry logic for API errors (max 2 retries)
+      const maxRetries = 2;
+      let lastError: Error | null = null;
+      let result;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`Retrying API call (attempt ${attempt + 1}/${maxRetries + 1})...`);
+          }
+
+          result = streamText({
+            model: openai(MODEL_CONFIG.model),
+            providerOptions: {
+              openai: {
+                reasoningEffort: MODEL_CONFIG.reasoningEffort,
+              },
+            },
+            messages: allMessages,
+            experimental_telemetry: { isEnabled: true },
+            onFinish: ({ text }) => {
+              // Output: response
+              span.setAttribute('output.value', text);
+              span.setStatus({ code: SpanStatusCode.OK });
+              span.end();
+            },
+          });
+
+          // If we get here without error, break the retry loop
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.error(`API call failed (attempt ${attempt + 1}/${maxRetries + 1}):`, lastError.message);
+
+          if (attempt === maxRetries) {
+            throw lastError;
+          }
+
+          // Small delay before retry
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+
+      if (!result) {
+        throw lastError ?? new Error('Failed to get response from API');
+      }
 
       // Get the streaming response
       const response = result.toUIMessageStreamResponse({

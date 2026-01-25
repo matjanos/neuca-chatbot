@@ -20,7 +20,7 @@ services:
     ports:
       - "5002:5002"
     environment:
-      - GRPC_PORT=5001
+      - PORT=5002
     networks:
       - neuca-network
 
