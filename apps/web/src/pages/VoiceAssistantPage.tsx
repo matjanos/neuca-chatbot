@@ -1,11 +1,26 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Mascot } from '../components/mascot/Mascot'
 
 const AGENT_ID = 'agent_8301kfth6cgwfmxvqv3dyhsarxwv'
 
+type AnimationPhase = 'intro' | 'text' | 'transition' | 'ready'
+
 export function VoiceAssistantPage() {
   const widgetRef = useRef<HTMLElement | null>(null)
+  const [phase, setPhase] = useState<AnimationPhase>('intro')
+
+  // Animation sequence timer
+  useEffect(() => {
+    const t1 = setTimeout(() => setPhase('text'), 500)        // Show text
+    const t2 = setTimeout(() => setPhase('transition'), 3000) // Start fade
+    const t3 = setTimeout(() => setPhase('ready'), 3800)      // Show content
+    return () => {
+      clearTimeout(t1)
+      clearTimeout(t2)
+      clearTimeout(t3)
+    }
+  }, [])
 
   useEffect(() => {
     const customStyles = `
@@ -106,36 +121,51 @@ export function VoiceAssistantPage() {
       requestAnimationFrame(poll)
     }
 
+    // Only load widget after animation is complete
+    if (phase !== 'ready') return
+
     loadWidget()
 
     return () => observer?.disconnect()
-  }, [])
+  }, [phase])
 
   return (
     <div className="voice-page">
-      {/* Background grid */}
-      <div className="voice-grid" />
+      {/* Intro overlay - renders during intro/text/transition phases */}
+      {phase !== 'ready' && (
+        <div className={`voice-intro ${phase === 'text' ? 'voice-intro--text' : ''} ${phase === 'transition' ? 'voice-intro--fade' : ''}`}>
+          <h1 className="voice-intro-text">Jest jeszcze jedna rzecz...</h1>
+        </div>
+      )}
 
-      {/* Mascot at top center */}
-      <div className="voice-mascot-top">
-        <Mascot size="lg" animate />
+      {/* Main content - only visible when ready */}
+      <div className={`voice-content ${phase === 'ready' ? 'voice-content--visible' : ''}`}>
+        {/* Background grid */}
+        <div className="voice-grid" />
+
+        {/* Mascot at top center */}
+        <div className="voice-mascot-top">
+          <Mascot size="lg" animate />
+        </div>
+
+        {/* White box backdrop for widget */}
+        <div className="voice-widget-backdrop" />
+
+        {/* ElevenLabs widget - only load after animation complete */}
+        {phase === 'ready' && (
+          /* @ts-expect-error - ElevenLabs custom element */
+          <elevenlabs-convai
+            language="pl"
+            ref={widgetRef}
+            agent-id={AGENT_ID}
+          />
+        )}
+
+        {/* Back button at bottom */}
+        <Link to="/" className="voice-back-btn">
+          ← Wróć do czatu
+        </Link>
       </div>
-
-      {/* White box backdrop for widget */}
-      <div className="voice-widget-backdrop" />
-
-      {/* ElevenLabs widget - renders as fixed overlay in bottom right */}
-      {/* @ts-expect-error - ElevenLabs custom element */}
-      <elevenlabs-convai
-        language="pl"
-        ref={widgetRef}
-        agent-id={AGENT_ID}
-      />
-
-      {/* Back button at bottom */}
-      <Link to="/" className="voice-back-btn">
-        ← Wróć do czatu
-      </Link>
     </div>
   )
 }

@@ -136,3 +136,165 @@ body {
   border-color: rgba(0, 159, 188, 0.4);
   box-shadow: 0 8px 30px rgba(0, 159, 188, 0.15);
 }
+
+/* ========================================
+   Voice Assistant - Cinematic Entry Animation
+   ======================================== */
+
+/* Intro overlay - fullscreen light with gradient */
+.voice-intro {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(135deg, #f8fafc 0%, #e0f2fe 30%, #bae6fd 60%, #e0f2fe 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  overflow: hidden;
+}
+
+/* Animated gradient shimmer overlay */
+.voice-intro::before {
+  content: '';
+  position: absolute;
+  inset: -50%;
+  background: linear-gradient(
+    45deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.8) 50%,
+    transparent 70%
+  );
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+/* Soft radial glow behind text */
+.voice-intro::after {
+  content: '';
+  position: absolute;
+  width: 600px;
+  height: 400px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 159, 188, 0.15) 0%,
+    rgba(56, 189, 248, 0.1) 30%,
+    transparent 70%
+  );
+  border-radius: 50%;
+  filter: blur(40px);
+}
+
+/* Intro text styling - cinematic wide sans-serif */
+.voice-intro-text {
+  font-family: 'Raleway', sans-serif;
+  font-size: clamp(1.8rem, 5vw, 3.5rem);
+  font-weight: 200;
+  text-transform: uppercase;
+  color: #0c4a6e;
+  letter-spacing: 0.35em;
+  opacity: 0;
+  position: relative;
+  z-index: 10;
+  text-align: center;
+  padding: 0 1rem;
+  text-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.08),
+    0 0 40px rgba(56, 189, 248, 0.5),
+    0 0 80px rgba(0, 159, 188, 0.3);
+}
+
+/* Text visible phase */
+.voice-intro--text .voice-intro-text {
+  animation: textFadeIn 1s ease-out forwards, textGlowLight 2.5s ease-in-out infinite;
+}
+
+/* Transition/fade phase */
+.voice-intro--fade {
+  animation: overlayFadeOut 0.8s ease-in-out forwards;
+}
+
+.voice-intro--fade .voice-intro-text {
+  animation: textFadeOut 0.5s ease-out forwards;
+}
+
+/* Content wrapper - hidden by default */
+.voice-content {
+  position: fixed;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Content revealed */
+.voice-content--visible {
+  opacity: 1;
+  pointer-events: auto;
+  animation: contentFadeIn 0.6s ease-out forwards;
+}
+
+/* Keyframes */
+@keyframes textFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(15px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes textFadeOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+}
+
+@keyframes textGlowLight {
+  0%, 100% {
+    text-shadow:
+      0 2px 4px rgba(0, 0, 0, 0.1),
+      0 0 40px rgba(56, 189, 248, 0.4),
+      0 0 80px rgba(0, 159, 188, 0.2);
+  }
+  50% {
+    text-shadow:
+      0 2px 4px rgba(0, 0, 0, 0.1),
+      0 0 60px rgba(56, 189, 248, 0.6),
+      0 0 120px rgba(0, 159, 188, 0.4),
+      0 0 160px rgba(125, 211, 252, 0.3);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%) rotate(45deg);
+  }
+  100% {
+    transform: translateX(100%) rotate(45deg);
+  }
+}
+
+@keyframes overlayFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes contentFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
