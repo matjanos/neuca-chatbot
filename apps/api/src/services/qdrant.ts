@@ -44,6 +44,8 @@ export async function searchSimilar(
   } = {}
 ): Promise<SearchResult[]> {
   const { title, limit = RAG_CONFIG.topK, query } = options;
+  const startTime = Date.now();
+  console.log(`[qdrant] Searching for "${query?.slice(0, 50) ?? 'no query'}...", title filter: ${title ?? 'none'}, limit: ${limit}`);
 
   return tracer.startActiveSpan('qdrant.search', async (span) => {
     try {
@@ -73,6 +75,11 @@ export async function searchSimilar(
         with_payload: true,
       });
 
+      console.log(`[qdrant] Found ${results.length} results in ${Date.now() - startTime}ms`);
+      if (results.length > 0) {
+        console.log(`[qdrant] Top result score: ${results[0].score.toFixed(4)}`);
+      }
+
       // Output: search results with scores and content preview
       const outputData = {
         results_count: results.length,
@@ -95,6 +102,7 @@ export async function searchSimilar(
         score: r.score,
       }));
     } catch (error) {
+      console.error(`[qdrant] Search error:`, error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
       throw error;
     } finally {

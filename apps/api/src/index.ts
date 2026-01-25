@@ -67,11 +67,17 @@ type ChatMessage = UIMessageFormat | LegacyMessageFormat;
  * Works with useChat hook from @ai-sdk/react
  */
 app.post('/api/chat', async (c) => {
+  const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  console.log(`[${requestId}] === Chat request started ===`);
+
   return tracer.startActiveSpan('chat.request', async (span) => {
     try {
-      const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = await c.req.json();
+      const body = await c.req.json();
+      const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = body;
+      console.log(`[${requestId}] Received ${messages?.length ?? 0} messages, lectureTitle: ${lectureTitle ?? 'none'}`);
 
       if (!messages || !Array.isArray(messages)) {
+        console.log(`[${requestId}] ERROR: messages array is required`);
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'messages array is required' });
         span.end();
         return c.json({ error: 'messages array is required' }, 400);
@@ -80,6 +86,7 @@ app.post('/api/chat', async (c) => {
       // Get the last user message
       const lastMessage = messages[messages.length - 1];
       if (!lastMessage || lastMessage.role !== 'user') {
+        console.log(`[${requestId}] ERROR: Last message must be from user`);
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'Last message must be from user' });
         span.end();
         return c.json({ error: 'Last message must be from user' }, 400);
@@ -96,14 +103,19 @@ app.post('/api/chat', async (c) => {
         userText = lastMessage.content;
       }
 
+      console.log(`[${requestId}] User message: "${userText.slice(0, 100)}${userText.length > 100 ? '...' : ''}"`);
+
       if (!userText) {
+        console.log(`[${requestId}] ERROR: User message must contain text`);
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'User message must contain text' });
         span.end();
         return c.json({ error: 'User message must contain text' }, 400);
       }
 
       // Check for PII before processing
+      console.log(`[${requestId}] Checking for PII...`);
       const piiResult = await analyzePII(userText);
+      console.log(`[${requestId}] PII check result: hasPII=${piiResult.hasPII}, entities=${piiResult.entities.length}`);
 
       if (piiResult.hasPII) {
         const entityTypes = [...new Set(piiResult.entities.map((e) => e.entity_type))];
@@ -144,7 +156,11 @@ app.post('/api/chat', async (c) => {
       span.setAttribute('input.value', userText);
 
       // Prepare RAG context (search, build system prompt)
+      console.log(`[${requestId}] Preparing RAG context...`);
+      const ragContextStart = Date.now();
       const ragContext = await prepareRAGContext(userText, lectureTitle);
+      console.log(`[${requestId}] RAG context prepared in ${Date.now() - ragContextStart}ms, sources: ${ragContext.sources?.length ?? 0}, videoId: ${ragContext.videoId ?? 'none'}`);
+      console.log(`[${requestId}] System prompt length: ${ragContext.systemPrompt.length}, context prompt length: ${ragContext.contextPrompt?.length ?? 0}`);
 
       // Build messages with RAG context injected
       const systemMessages = [
@@ -187,10 +203,12 @@ app.post('/api/chat', async (c) => {
       let lastError: Error | null = null;
       let result;
 
+      console.log(`[${requestId}] Starting streamText with model: ${MODEL_CONFIG.model}, messages: ${allMessages.length}`);
+
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           if (attempt > 0) {
-            console.log(`Retrying API call (attempt ${attempt + 1}/${maxRetries + 1})...`);
+            console.log(`[${requestId}] Retrying API call (attempt ${attempt + 1}/${maxRetries + 1})...`);
           }
 
           result = streamText({
@@ -202,7 +220,8 @@ app.post('/api/chat', async (c) => {
             },
             messages: allMessages,
             experimental_telemetry: { isEnabled: true },
-            onFinish: ({ text }) => {
+            onFinish: ({ text, finishReason, usage }) => {
+              console.log(`[${requestId}] streamText onFinish: finishReason=${finishReason}, textLength=${text.length}, usage=${JSON.stringify(usage)}`);
               // Output: response
               span.setAttribute('output.value', text);
               span.setStatus({ code: SpanStatusCode.OK });
@@ -211,10 +230,12 @@ app.post('/api/chat', async (c) => {
           });
 
           // If we get here without error, break the retry loop
+          console.log(`[${requestId}] streamText created successfully`);
           break;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
-          console.error(`API call failed (attempt ${attempt + 1}/${maxRetries + 1}):`, lastError.message);
+          console.error(`[${requestId}] API call failed (attempt ${attempt + 1}/${maxRetries + 1}):`, lastError.message);
+          console.error(`[${requestId}] Error stack:`, lastError.stack);
 
           if (attempt === maxRetries) {
             throw lastError;
@@ -226,13 +247,55 @@ app.post('/api/chat', async (c) => {
       }
 
       if (!result) {
+        console.error(`[${requestId}] No result after retries`);
         throw lastError ?? new Error('Failed to get response from API');
       }
 
       // Get the streaming response
-      const response = result.toUIMessageStreamResponse({
+      console.log(`[${requestId}] Creating UI message stream response...`);
+      const originalResponse = result.toUIMessageStreamResponse({
         sendReasoning: true,
       });
+
+      // Wrap the response stream to log any errors during streaming
+      const originalBody = originalResponse.body;
+      if (!originalBody) {
+        console.error(`[${requestId}] Response has no body!`);
+        throw new Error('Response has no body');
+      }
+
+      const reader = originalBody.getReader();
+      let bytesStreamed = 0;
+
+      const wrappedStream = new ReadableStream({
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read();
+            if (done) {
+              console.log(`[${requestId}] Stream completed successfully, total bytes: ${bytesStreamed}`);
+              controller.close();
+              return;
+            }
+            bytesStreamed += value.length;
+            controller.enqueue(value);
+          } catch (error) {
+            console.error(`[${requestId}] Error during streaming (bytes so far: ${bytesStreamed}):`, error);
+            controller.error(error);
+          }
+        },
+        cancel(reason) {
+          console.log(`[${requestId}] Stream cancelled (bytes streamed: ${bytesStreamed}):`, reason);
+          reader.cancel(reason);
+        },
+      });
+
+      const response = new Response(wrappedStream, {
+        status: originalResponse.status,
+        statusText: originalResponse.statusText,
+        headers: originalResponse.headers,
+      });
+
+      console.log(`[${requestId}] Response created, returning stream to client`);
 
       // Add video context headers for timestamp linking
       if (ragContext.videoId) {
@@ -241,8 +304,13 @@ app.post('/api/chat', async (c) => {
 
       return response;
     } catch (error) {
-      console.error('Error processing chat:', error);
       const message = error instanceof Error ? error.message : 'Unknown error';
+      const stack = error instanceof Error ? error.stack : undefined;
+      console.error(`[${requestId}] === Chat request failed ===`);
+      console.error(`[${requestId}] Error:`, message);
+      if (stack) {
+        console.error(`[${requestId}] Stack:`, stack);
+      }
       span.setAttribute('output.value', JSON.stringify({ error: message }));
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       span.end();

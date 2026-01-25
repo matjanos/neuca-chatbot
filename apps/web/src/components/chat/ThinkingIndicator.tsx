@@ -6,7 +6,7 @@ interface ThinkingIndicatorProps {
 
 // Fun, distinguished Polish phrases for the thinking indicator
 const thinkingPhrases = [
-  'Deliberuje...',
+  'Deliberuję...',
   'Roztrząsam kwestię...',
   'Medytuję nad zagadnieniem...',
   'Kontempluję...',
@@ -16,6 +16,25 @@ const thinkingPhrases = [
   'Rozmyślam intensywnie...',
   'Przenikam istotę rzeczy...',
   'Rozważam implikacje...',
+  'Drążę zagadnienie...',
+  'Docieram do sedna...',
+  'Ważę argumenty...',
+  'Rozwikływuję problem...',
+  'Głowię się nad tym...',
+  'Penetruję materię...',
+  'Syntetyzuję wnioski...',
+  'Dociekam prawdy...',
+  'Badam możliwości...',
+  'Rozbieram na czynniki pierwsze...',
+  'Łamię sobie głowę...',
+  'Kalkuluję opcje...',
+  'Przetwarzam informacje...',
+  'Biję się z myślami...',
+  'Filtruję dane...',
+  'Szukam rozwiązania...',
+  'Konsoliduję wiedzę...',
+  'Tropię odpowiedź...',
+  'Dokonuję analizy...',
 ]
 
 export function ThinkingIndicator({ reasoning }: ThinkingIndicatorProps) {

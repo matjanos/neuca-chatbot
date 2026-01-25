@@ -13,6 +13,9 @@ export async function generateQueryEmbedding(query: string): Promise<number[]> {
     throw new Error('OPENAI_API_KEY environment variable is required for embeddings');
   }
 
+  const startTime = Date.now();
+  console.log(`[embedding] Generating embedding for query: "${query.slice(0, 50)}${query.length > 50 ? '...' : ''}"`);
+
   return tracer.startActiveSpan('ai.embed', async (span) => {
     try {
       // Input: the query text and model info
@@ -39,8 +42,10 @@ export async function generateQueryEmbedding(query: string): Promise<number[]> {
       span.setAttribute('output.value', JSON.stringify(outputData));
       span.setStatus({ code: SpanStatusCode.OK });
 
+      console.log(`[embedding] Generated ${embedding.length}-dim embedding in ${Date.now() - startTime}ms`);
       return embedding;
     } catch (error) {
+      console.error(`[embedding] Error generating embedding:`, error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
       throw error;
     } finally {
