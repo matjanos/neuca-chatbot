@@ -5,6 +5,7 @@ import { cors } from 'hono/cors';
 import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
+import pino from 'pino';
 import { SERVER_CONFIG, MODEL_CONFIG } from './config.js';
 import type { CompletionRequest, CompletionResponse } from './types.js';
 import { processMessage, processMessageStream, prepareRAGContext } from './agent/lecture-qa.js';
@@ -13,6 +14,369 @@ import * as memory from './services/memory.js';
 import { analyzePII } from './services/presidio.js';
 
 const tracer = trace.getTracer('api');
+
+// Setup Pino structured logger
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  formatters: {
+    level: (label) => ({ level: label }),
+  },
+});
+
+// Stream error codes for classification
+enum StreamErrorCode {
+  OPENAI_RATE_LIMIT = 'openai_rate_limit',
+  OPENAI_TIMEOUT = 'openai_timeout',
+  OPENAI_API_ERROR = 'openai_api_error',
+  QDRANT_CONNECTION = 'qdrant_connection',
+  QDRANT_TIMEOUT = 'qdrant_timeout',
+  EMBEDDING_GENERATION = 'embedding_generation',
+  STREAM_TIMEOUT = 'stream_timeout',
+  INTERNAL_ERROR = 'internal_error',
+}
+
+// Polish error messages for each error code
+const POLISH_ERROR_MESSAGES: Record<StreamErrorCode, string> = {
+  [StreamErrorCode.OPENAI_RATE_LIMIT]:
+    'Przekroczono limit zapytań. Proszę spróbować za chwilę.',
+  [StreamErrorCode.QDRANT_CONNECTION]:
+    'Błąd połączenia z bazą wiedzy. Skontaktuj się z administratorem.',
+  [StreamErrorCode.EMBEDDING_GENERATION]:
+    'Nie udało się przetworzyć pytania. Spróbuj ponownie.',
+  [StreamErrorCode.STREAM_TIMEOUT]:
+    'Przekroczono czas oczekiwania. Spróbuj ponownie.',
+  [StreamErrorCode.OPENAI_TIMEOUT]:
+    'Przekroczono czas oczekiwania odpowiedzi. Spróbuj ponownie.',
+  [StreamErrorCode.OPENAI_API_ERROR]:
+    'Błąd API OpenAI. Spróbuj ponownie za chwilę.',
+  [StreamErrorCode.QDRANT_TIMEOUT]:
+    'Przekroczono czas oczekiwania bazy wiedzy. Spróbuj ponownie.',
+  [StreamErrorCode.INTERNAL_ERROR]:
+    'Wystąpił błąd serwera. Spróbuj ponownie za chwilę.',
+};
+
+/**
+ * Classify error into known error codes
+ */
+function classifyError(error: Error): StreamErrorCode {
+  const msg = error.message.toLowerCase();
+
+  if (msg.includes('rate limit') || msg.includes('429')) return StreamErrorCode.OPENAI_RATE_LIMIT;
+  if (msg.includes('econnrefused') || msg.includes('qdrant')) return StreamErrorCode.QDRANT_CONNECTION;
+  if (msg.includes('timeout') && msg.includes('qdrant')) return StreamErrorCode.QDRANT_TIMEOUT;
+  if (msg.includes('timeout') && (msg.includes('openai') || msg.includes('stream'))) return StreamErrorCode.OPENAI_TIMEOUT;
+  if (msg.includes('timeout')) return StreamErrorCode.STREAM_TIMEOUT;
+  if (msg.includes('embedding')) return StreamErrorCode.EMBEDDING_GENERATION;
+  if (msg.includes('openai') || msg.includes('api')) return StreamErrorCode.OPENAI_API_ERROR;
+
+  return StreamErrorCode.INTERNAL_ERROR;
+}
+
+/**
+ * Check if an error is retryable
+ */
+function isRetryableError(code: StreamErrorCode): boolean {
+  return [
+    StreamErrorCode.OPENAI_TIMEOUT,
+    StreamErrorCode.QDRANT_TIMEOUT,
+    StreamErrorCode.STREAM_TIMEOUT,
+    StreamErrorCode.OPENAI_RATE_LIMIT,
+  ].includes(code);
+}
+
+/**
+ * Get Polish error message for error code
+ */
+function getPolishErrorMessage(code: StreamErrorCode): string {
+  return POLISH_ERROR_MESSAGES[code] || POLISH_ERROR_MESSAGES[StreamErrorCode.INTERNAL_ERROR];
+}
+
+/**
+ * Create an SSE error stream response (instead of JSON 500)
+ * This ensures that errors after streaming starts are still sent as SSE events
+ */
+function createErrorStream(
+  error: Error,
+  requestId: string,
+  traceId: string
+): Response {
+  const errorCode = classifyError(error);
+  const userMessage = getPolishErrorMessage(errorCode);
+
+  logger.error({
+    operation: 'stream.error',
+    requestId,
+    traceId,
+    error: {
+      message: error.message,
+      code: errorCode,
+      stack: error.stack,
+    },
+  }, 'Stream failed');
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      // Send SSE format error events
+      controller.enqueue(encoder.encode('data: {"type":"start"}\n\n'));
+      controller.enqueue(encoder.encode('data: {"type":"start-step"}\n\n'));
+
+      const textId = `error-${Date.now()}`;
+      controller.enqueue(encoder.encode(`data: {"type":"text-start","id":"${textId}"}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+        type: 'text-delta',
+        id: textId,
+        delta: userMessage,
+      })}\n\n`));
+      controller.enqueue(encoder.encode(`data: {"type":"text-end","id":"${textId}"}\n\n`));
+
+      controller.enqueue(encoder.encode('data: {"type":"finish-step"}\n\n'));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+        type: 'error',
+        error: {
+          code: errorCode,
+          message: userMessage,
+          retryable: isRetryableError(errorCode),
+        },
+      })}\n\n`));
+      controller.enqueue(encoder.encode('data: {"type":"finish"}\n\n'));
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Request-Id': requestId,
+      'X-Trace-Id': traceId,
+    },
+  });
+}
+
+/**
+ * Create monitored stream with heartbeat and timeout detection
+ * Properly handles errors by sending SSE error events before closing
+ */
+function createMonitoredStream(
+  result: ReturnType<typeof streamText>,
+  requestId: string,
+  traceId: string,
+  streamLogger: pino.Logger
+): Response {
+  // Use shorter heartbeat interval to prevent connection timeout during OpenAI reasoning
+  // Many proxies/browsers have ~10-30 second idle timeouts
+  const HEARTBEAT_INTERVAL = 5000; // 5s - more aggressive to prevent idle timeouts
+  const TIMEOUT_THRESHOLD = 60000; // 60s - increase timeout for reasoning models
+
+  let lastActivity = Date.now();
+  let heartbeatTimer: Timer;
+
+  // Try to create the UI message stream response
+  let originalResponse;
+  let reader;
+  try {
+    originalResponse = result.toUIMessageStreamResponse({ sendReasoning: true });
+    if (!originalResponse.body) {
+      throw new Error('Response body is null');
+    }
+    reader = originalResponse.body.getReader();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    streamLogger.error({
+      operation: 'stream.ui_response_creation.failed',
+      requestId,
+      traceId,
+      error: { message: err.message, name: err.name, stack: err.stack },
+    }, 'Failed to create UI message stream response');
+    throw err;
+  }
+
+  const encoder = new TextEncoder();
+
+  /**
+   * Send error event as SSE and close stream gracefully
+   */
+  function sendErrorAndClose(controller: ReadableStreamDefaultController, error: Error, errorCode: StreamErrorCode) {
+    const userMessage = getPolishErrorMessage(errorCode);
+
+    // Send error events in SSE format
+    const textId = `error-${Date.now()}`;
+    try {
+      controller.enqueue(encoder.encode(`data: {"type":"text-start","id":"${textId}"}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+        type: 'text-delta',
+        id: textId,
+        delta: userMessage,
+      })}\n\n`));
+      controller.enqueue(encoder.encode(`data: {"type":"text-end","id":"${textId}"}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+        type: 'error',
+        error: {
+          code: errorCode,
+          message: userMessage,
+          retryable: isRetryableError(errorCode),
+        },
+      })}\n\n`));
+      controller.enqueue(encoder.encode('data: {"type":"finish"}\n\n'));
+    } catch (enqueueError) {
+      // Controller might be closed, log but don't throw
+      streamLogger.error({
+        operation: 'stream.error_enqueue_failed',
+        requestId,
+        error: { message: String(enqueueError) },
+      }, 'Failed to enqueue error event');
+    }
+
+    // Close gracefully
+    try {
+      controller.close();
+    } catch (closeError) {
+      // Already closed, ignore
+    }
+  }
+
+  // Track if stream was cancelled to avoid writing to closed controller
+  let isCancelled = false;
+
+  const monitoredStream = new ReadableStream({
+    async start(controller) {
+      // CRITICAL: Send immediate keep-alive to establish data flow
+      // This prevents timeout/cancel when OpenAI is slow to respond (reasoning models)
+      // Without this, the connection stays idle and may be terminated by browser/network layer
+      try {
+        controller.enqueue(encoder.encode(': stream-connected\n\n'));
+        streamLogger.debug({
+          operation: 'stream.initial_keepalive',
+          requestId,
+          traceId,
+        }, 'Sent initial keep-alive');
+      } catch (err) {
+        streamLogger.error({
+          operation: 'stream.initial_keepalive_failed',
+          requestId,
+          error: { message: String(err) },
+        }, 'Failed to send initial keep-alive');
+      }
+
+      heartbeatTimer = setInterval(() => {
+        // Don't do anything if stream was cancelled
+        if (isCancelled) {
+          clearInterval(heartbeatTimer);
+          return;
+        }
+
+        const elapsed = Date.now() - lastActivity;
+
+        if (elapsed > TIMEOUT_THRESHOLD) {
+          streamLogger.error({
+            operation: 'stream.timeout',
+            requestId,
+            traceId,
+            durationMs: elapsed,
+          }, 'Stream timeout detected');
+
+          clearInterval(heartbeatTimer);
+          const timeoutError = new Error('Stream timeout - no data received for 60 seconds');
+          sendErrorAndClose(controller, timeoutError, StreamErrorCode.STREAM_TIMEOUT);
+          return;
+        }
+
+        // Send SSE comment as heartbeat (keep connection alive)
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'));
+        } catch (heartbeatError) {
+          // Stream might be closed, clear interval
+          clearInterval(heartbeatTimer);
+        }
+      }, HEARTBEAT_INTERVAL);
+
+      try {
+        while (true) {
+          // Check if cancelled before reading
+          if (isCancelled) {
+            streamLogger.debug({
+              operation: 'stream.cancelled_during_read',
+              requestId,
+              traceId,
+            }, 'Stream reading stopped due to cancellation');
+            break;
+          }
+
+          const { done, value } = await reader.read();
+          if (done) {
+            clearInterval(heartbeatTimer);
+            // Only close if not already cancelled
+            if (!isCancelled) {
+              controller.close();
+              streamLogger.debug({
+                operation: 'stream.closed',
+                requestId,
+                traceId,
+              }, 'Stream closed normally');
+            }
+            break;
+          }
+          lastActivity = Date.now();
+
+          // Only enqueue if not cancelled
+          if (!isCancelled) {
+            controller.enqueue(value);
+          }
+        }
+      } catch (error) {
+        clearInterval(heartbeatTimer);
+
+        // If already cancelled, don't try to send error events
+        if (isCancelled) {
+          streamLogger.debug({
+            operation: 'stream.error_after_cancel',
+            requestId,
+            traceId,
+          }, 'Stream error occurred after cancellation, ignoring');
+          return;
+        }
+
+        const err = error instanceof Error ? error : new Error(String(error));
+        streamLogger.error({
+          operation: 'stream.read_error',
+          requestId,
+          traceId,
+          error: { message: err.message, name: err.name, stack: err.stack },
+        }, 'Stream read error');
+
+        // Send error as SSE event instead of calling controller.error()
+        const errorCode = classifyError(err);
+        sendErrorAndClose(controller, err, errorCode);
+      }
+    },
+    cancel() {
+      isCancelled = true; // Mark as cancelled first
+      clearInterval(heartbeatTimer);
+
+      // Cancel the underlying reader
+      reader.cancel().catch((err) => {
+        streamLogger.debug({
+          operation: 'stream.cancel_reader_failed',
+          requestId,
+          traceId,
+          error: { message: err.message },
+        }, 'Failed to cancel reader');
+      });
+
+      streamLogger.info({
+        operation: 'stream.cancelled',
+        requestId,
+        traceId,
+      }, 'Stream cancelled by client');
+    },
+  });
+
+  return new Response(monitoredStream, {
+    headers: originalResponse.headers,
+  });
+}
 
 const app = new Hono();
 
@@ -72,20 +436,36 @@ type ChatMessage = UIMessageFormat | LegacyMessageFormat;
  */
 app.post('/api/chat', async (c) => {
   const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  console.log(`[${requestId}] === Chat request started ===`);
 
   return tracer.startActiveSpan('chat.request', async (span) => {
     // Extract trace ID from active span
     const spanContext = span.spanContext();
     const traceId = spanContext.traceId;
 
+    logger.info({
+      operation: 'chat.request.start',
+      requestId,
+      traceId,
+    }, 'Chat request started');
+
     try {
       const body = await c.req.json();
       const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = body;
-      console.log(`[${requestId}] Received ${messages?.length ?? 0} messages, lectureTitle: ${lectureTitle ?? 'none'}`);
+
+      logger.debug({
+        operation: 'chat.request.received',
+        requestId,
+        traceId,
+        input: { messageCount: messages?.length ?? 0, lectureTitle: lectureTitle ?? null },
+      }, 'Request data received');
 
       if (!messages || !Array.isArray(messages)) {
-        console.log(`[${requestId}] ERROR: messages array is required`);
+        logger.warn({
+          operation: 'chat.request.validation_error',
+          requestId,
+          traceId,
+          error: 'messages array is required',
+        }, 'Validation failed');
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'messages array is required' });
         span.end();
         return c.json({ error: 'messages array is required' }, 400);
@@ -94,7 +474,12 @@ app.post('/api/chat', async (c) => {
       // Get the last user message
       const lastMessage = messages[messages.length - 1];
       if (!lastMessage || lastMessage.role !== 'user') {
-        console.log(`[${requestId}] ERROR: Last message must be from user`);
+        logger.warn({
+          operation: 'chat.request.validation_error',
+          requestId,
+          traceId,
+          error: 'Last message must be from user',
+        }, 'Validation failed');
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'Last message must be from user' });
         span.end();
         return c.json({ error: 'Last message must be from user' }, 400);
@@ -111,19 +496,38 @@ app.post('/api/chat', async (c) => {
         userText = lastMessage.content;
       }
 
-      console.log(`[${requestId}] User message: "${userText.slice(0, 100)}${userText.length > 100 ? '...' : ''}"`);
+      logger.debug({
+        operation: 'chat.request.user_message',
+        requestId,
+        traceId,
+        input: { messageLength: userText.length, preview: userText.slice(0, 100) },
+      }, 'User message extracted');
 
       if (!userText) {
-        console.log(`[${requestId}] ERROR: User message must contain text`);
+        logger.warn({
+          operation: 'chat.request.validation_error',
+          requestId,
+          traceId,
+          error: 'User message must contain text',
+        }, 'Validation failed');
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'User message must contain text' });
         span.end();
         return c.json({ error: 'User message must contain text' }, 400);
       }
 
       // Check for PII before processing
-      console.log(`[${requestId}] Checking for PII...`);
+      logger.debug({
+        operation: 'pii.check.start',
+        requestId,
+        traceId,
+      }, 'Starting PII check');
       const piiResult = await analyzePII(userText);
-      console.log(`[${requestId}] PII check result: hasPII=${piiResult.hasPII}, entities=${piiResult.entities.length}`);
+      logger.info({
+        operation: 'pii.check.complete',
+        requestId,
+        traceId,
+        output: { hasPII: piiResult.hasPII, entityCount: piiResult.entities.length, durationMs: piiResult.durationMs },
+      }, piiResult.hasPII ? 'PII detected' : 'No PII detected');
 
       if (piiResult.hasPII) {
         const entityTypes = [...new Set(piiResult.entities.map((e) => e.entity_type))];
@@ -164,11 +568,40 @@ app.post('/api/chat', async (c) => {
       span.setAttribute('input.value', userText);
 
       // Prepare RAG context (search, build system prompt)
-      console.log(`[${requestId}] Preparing RAG context...`);
+      logger.debug({
+        operation: 'rag.prepare.start',
+        requestId,
+        traceId,
+        input: { lectureTitle: lectureTitle ?? null },
+      }, 'Preparing RAG context');
       const ragContextStart = Date.now();
-      const ragContext = await prepareRAGContext(userText, lectureTitle);
-      console.log(`[${requestId}] RAG context prepared in ${Date.now() - ragContextStart}ms, sources: ${ragContext.sources?.length ?? 0}, videoId: ${ragContext.videoId ?? 'none'}`);
-      console.log(`[${requestId}] System prompt length: ${ragContext.systemPrompt.length}, context prompt length: ${ragContext.contextPrompt?.length ?? 0}`);
+      let ragContext;
+      try {
+        ragContext = await prepareRAGContext(userText, lectureTitle);
+        const ragDurationMs = Date.now() - ragContextStart;
+        logger.info({
+          operation: 'rag.prepare.complete',
+          requestId,
+          traceId,
+          durationMs: ragDurationMs,
+          output: {
+            sourcesCount: ragContext.sources?.length ?? 0,
+            videoId: ragContext.videoId ?? null,
+            systemPromptLength: ragContext.systemPrompt.length,
+            contextPromptLength: ragContext.contextPrompt?.length ?? 0,
+          },
+        }, 'RAG context prepared');
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.error({
+          operation: 'rag.prepare.failed',
+          requestId,
+          traceId,
+          durationMs: Date.now() - ragContextStart,
+          error: { message: err.message, name: err.name, stack: err.stack },
+        }, 'RAG context preparation failed');
+        throw err;
+      }
 
       // Build messages with RAG context injected
       const systemMessages = [
@@ -211,19 +644,30 @@ app.post('/api/chat', async (c) => {
       let lastError: Error | null = null;
       let result;
 
-      console.log(`[${requestId}] Starting streamText with model: ${MODEL_CONFIG.model}, messages: ${allMessages.length}`);
+      logger.info({
+        operation: 'stream.create.start',
+        requestId,
+        traceId,
+        input: { model: MODEL_CONFIG.model, messageCount: allMessages.length },
+      }, 'Creating streamText');
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           if (attempt > 0) {
-            console.log(`[${requestId}] Retrying API call (attempt ${attempt + 1}/${maxRetries + 1})...`);
+            logger.warn({
+              operation: 'stream.create.retry',
+              requestId,
+              traceId,
+              attempt: attempt + 1,
+              maxAttempts: maxRetries + 1,
+            }, 'Retrying API call');
           }
 
+          const streamStartTime = Date.now();
           result = streamText({
-            model: openai(MODEL_CONFIG.model, {
-              structuredOutputs: true,
-            }),
+            model: openai(MODEL_CONFIG.model),
             maxRetries: 2, // AI SDK will retry failed requests automatically
+            abortSignal: undefined, // Don't pass abort signal (let client handle cancellation)
             providerOptions: {
               openai: {
                 reasoningEffort: MODEL_CONFIG.reasoningEffort,
@@ -231,25 +675,66 @@ app.post('/api/chat', async (c) => {
             },
             messages: allMessages,
             experimental_telemetry: { isEnabled: true },
+            onChunk: ({ chunk }) => {
+              logger.debug({
+                operation: 'stream.chunk_received',
+                requestId,
+                traceId,
+                timeSinceStart: Date.now() - streamStartTime,
+                chunkType: chunk.type,
+              }, 'Received chunk from OpenAI');
+            },
             onFinish: ({ text, finishReason, usage }) => {
-              console.log(`[${requestId}] streamText onFinish: finishReason=${finishReason}, textLength=${text.length}, usage=${JSON.stringify(usage)}`);
+              logger.info({
+                operation: 'stream.finished',
+                requestId,
+                traceId,
+                durationMs: Date.now() - streamStartTime,
+                output: {
+                  finishReason,
+                  textLength: text.length,
+                  usage,
+                },
+              }, 'Stream finished successfully');
               // Output: response
               span.setAttribute('output.value', text);
               span.setStatus({ code: SpanStatusCode.OK });
               span.end();
             },
-            onError: (error) => {
-              console.error(`[${requestId}] streamText onError:`, error);
+            onError: ({ error }) => {
+              const err = error instanceof Error ? error : new Error(String(error));
+              logger.error({
+                operation: 'stream.error_callback',
+                requestId,
+                traceId,
+                durationMs: Date.now() - streamStartTime,
+                error: {
+                  message: err.message,
+                  name: err.name,
+                  stack: err.stack,
+                  cause: (err as any).cause,
+                },
+              }, 'Stream error callback triggered');
             },
           });
 
           // If we get here without error, break the retry loop
-          console.log(`[${requestId}] streamText created successfully`);
+          logger.debug({
+            operation: 'stream.create.success',
+            requestId,
+            traceId,
+          }, 'streamText created successfully');
           break;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
-          console.error(`[${requestId}] API call failed (attempt ${attempt + 1}/${maxRetries + 1}):`, lastError.message);
-          console.error(`[${requestId}] Error stack:`, lastError.stack);
+          logger.error({
+            operation: 'stream.create.failed',
+            requestId,
+            traceId,
+            attempt: attempt + 1,
+            maxAttempts: maxRetries + 1,
+            error: { message: lastError.message, stack: lastError.stack },
+          }, 'API call failed');
 
           if (attempt === maxRetries) {
             throw lastError;
@@ -261,17 +746,34 @@ app.post('/api/chat', async (c) => {
       }
 
       if (!result) {
-        console.error(`[${requestId}] No result after retries`);
+        logger.error({
+          operation: 'stream.create.no_result',
+          requestId,
+          traceId,
+        }, 'No result after retries');
         throw lastError ?? new Error('Failed to get response from API');
       }
 
-      // Get the streaming response
-      console.log(`[${requestId}] Creating UI message stream response...`);
-      const response = result.toUIMessageStreamResponse({
-        sendReasoning: true,
-      });
+      // Get the streaming response with monitoring
+      logger.info({
+        operation: 'stream.response.create',
+        requestId,
+        traceId,
+      }, 'Creating monitored UI stream');
 
-      console.log(`[${requestId}] Response created, returning stream to client`);
+      let response;
+      try {
+        response = createMonitoredStream(result, requestId, traceId, logger);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.error({
+          operation: 'stream.response.create.failed',
+          requestId,
+          traceId,
+          error: { message: err.message, name: err.name, stack: err.stack },
+        }, 'Failed to create monitored stream');
+        throw err;
+      }
 
       // Add video context header for timestamp linking
       if (ragContext.videoId) {
@@ -283,24 +785,40 @@ app.post('/api/chat', async (c) => {
         response.headers.set('X-Trace-Id', traceId);
       }
 
+      // Add request ID for debugging
+      response.headers.set('X-Request-Id', requestId);
+
       // Ensure proper streaming headers
       response.headers.set('Cache-Control', 'no-cache, no-transform');
       response.headers.set('Connection', 'keep-alive');
       response.headers.set('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
+      logger.debug({
+        operation: 'stream.response.sent',
+        requestId,
+        traceId,
+      }, 'Stream response sent to client');
+
       return response;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      const stack = error instanceof Error ? error.stack : undefined;
-      console.error(`[${requestId}] === Chat request failed ===`);
-      console.error(`[${requestId}] Error:`, message);
-      if (stack) {
-        console.error(`[${requestId}] Stack:`, stack);
-      }
-      span.setAttribute('output.value', JSON.stringify({ error: message }));
-      span.setStatus({ code: SpanStatusCode.ERROR, message });
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error({
+        operation: 'chat.request.failed',
+        requestId,
+        traceId,
+        error: {
+          message: err.message,
+          name: err.name,
+          stack: err.stack,
+        },
+      }, 'Chat request failed');
+
+      span.setAttribute('output.value', JSON.stringify({ error: err.message }));
+      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
       span.end();
-      return c.json({ error: message }, 500);
+
+      // Return error as SSE stream, not JSON (critical fix!)
+      return createErrorStream(err, requestId, traceId);
     }
   });
 });
@@ -383,7 +901,25 @@ app.post('/completion', async (c) => {
 });
 
 // Start server
-console.log(`Starting server on port ${SERVER_CONFIG.port}...`);
+logger.info({
+  operation: 'server.start',
+  port: SERVER_CONFIG.port,
+  logLevel: process.env.LOG_LEVEL || 'info',
+}, 'Starting server');
+
+// Periodic health check (every 60s)
+setInterval(async () => {
+  const qdrantHealthy = await checkConnection();
+
+  logger.info({
+    operation: 'health.check',
+    status: {
+      qdrant: qdrantHealthy,
+      openai: !!process.env.OPENAI_API_KEY,
+      presidio: !!process.env.PRESIDIO_ANALYZER_URL,
+    },
+  }, 'Health status');
+}, 60000);
 
 export default {
   port: SERVER_CONFIG.port,

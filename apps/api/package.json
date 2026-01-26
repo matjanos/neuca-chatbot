@@ -15,7 +15,8 @@
     "@opentelemetry/sdk-node": "^0.211.0",
     "@qdrant/js-client-rest": "^1.16.2",
     "ai": "^6.0.48",
-    "hono": "^4.7.7"
+    "hono": "^4.7.7",
+    "pino": "^10.3.0"
   },
   "devDependencies": {
     "bun-types": "latest",

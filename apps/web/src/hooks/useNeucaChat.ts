@@ -2,6 +2,91 @@ import { useChat, Chat, UIMessage } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+/** Client-side log entry structure */
+interface ClientLogEntry {
+  timestamp: number;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  event: string;
+  requestId?: string;
+  traceId?: string;
+  context?: Record<string, any>;
+  error?: { message: string; name: string };
+}
+
+/** ChatLogger utility for structured client-side logging */
+class ChatLogger {
+  private sessionId: string;
+
+  constructor() {
+    this.sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  log(entry: ClientLogEntry) {
+    const fullEntry = { ...entry, sessionId: this.sessionId };
+
+    const emoji = { debug: '🔍', info: 'ℹ️', warn: '⚠️', error: '❌' }[entry.level];
+    console.log(`${emoji} [${entry.event}]`, fullEntry);
+  }
+
+  streamStart(messageText: string) {
+    this.log({
+      timestamp: Date.now(),
+      level: 'info',
+      event: 'stream.start',
+      context: { messageLength: messageText.length },
+    });
+  }
+
+  streamComplete(durationMs: number) {
+    this.log({
+      timestamp: Date.now(),
+      level: 'info',
+      event: 'stream.complete',
+      context: { durationMs },
+    });
+  }
+
+  streamError(error: Error, context?: Record<string, any>) {
+    this.log({
+      timestamp: Date.now(),
+      level: 'error',
+      event: 'stream.error',
+      error: { message: error.message, name: error.name },
+      context,
+    });
+  }
+
+  retry(attempt: number, maxAttempts: number, reason?: string) {
+    this.log({
+      timestamp: Date.now(),
+      level: 'warn',
+      event: 'stream.retry',
+      context: { attempt, maxAttempts, reason },
+    });
+  }
+
+  timeout(durationMs: number) {
+    this.log({
+      timestamp: Date.now(),
+      level: 'error',
+      event: 'stream.timeout',
+      context: { durationMs },
+    });
+  }
+
+  apiCall(url: string, attempt: number) {
+    this.log({
+      timestamp: Date.now(),
+      level: 'debug',
+      event: 'api.call',
+      context: { url, attempt },
+    });
+  }
+}
+
+// Create singleton logger
+const chatLogger = new ChatLogger();
+
 export function useNeucaChat() {
   const [input, setInput] = useState('')
   const [videoId, setVideoId] = useState<string | null>(null)
@@ -28,10 +113,23 @@ export function useNeucaChat() {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         if (attempt > 0) {
-          console.log(`Retrying API call (attempt ${attempt + 1}/${maxRetries + 1})...`)
+          chatLogger.apiCall(String(url), attempt + 1)
         }
 
         const response = await fetch(url, options)
+
+        // Log response details for debugging
+        chatLogger.log({
+          timestamp: Date.now(),
+          level: 'debug',
+          event: 'api.response',
+          context: {
+            status: response.status,
+            statusText: response.statusText,
+            contentType: response.headers.get('content-type'),
+            ok: response.ok,
+          },
+        })
 
         // Handle error responses (e.g., PII detection)
         if (!response.ok) {
@@ -105,13 +203,27 @@ export function useNeucaChat() {
   const isAutoRetryingRef = useRef(false)
   const retryCountRef = useRef(0)
 
+  // Track error history for debugging
+  const errorHistoryRef = useRef<Array<{
+    timestamp: number;
+    error: Error;
+    recovered: boolean;
+  }>>([])
+
   // Create stable Chat instance - only once
   const chatRef = useRef<Chat<UIMessage> | null>(null)
   if (!chatRef.current) {
     chatRef.current = new Chat<UIMessage>({
       transport: transportRef.current,
       onError: (err) => {
-        console.error('💥 Chat error detected:', err.message)
+        chatLogger.streamError(err)
+
+        // Track error history
+        errorHistoryRef.current.push({
+          timestamp: Date.now(),
+          error: err,
+          recovered: false,
+        })
 
         // Check if this is a transient error worth auto-retrying
         const isTransient =
@@ -129,14 +241,14 @@ export function useNeucaChat() {
         if (isTransient && lastUserMessageRef.current && !isAutoRetryingRef.current && retryCountRef.current < 3) {
           isAutoRetryingRef.current = true
           retryCountRef.current++
-          console.log(`🔄 Auto-recovering from stream error (attempt ${retryCountRef.current}/3)...`)
+          chatLogger.retry(retryCountRef.current, 3, 'transient error')
 
           // Wait before retry with progressive backoff
           const delay = 1000 + (retryCountRef.current - 1) * 500
           setTimeout(() => {
             const messageToRetry = lastUserMessageRef.current
             if (messageToRetry && chatRef.current) {
-              console.log(`📤 Retrying message: "${messageToRetry.slice(0, 50)}..."`)
+              chatLogger.streamStart(messageToRetry)
 
               // Remove failed messages
               setMessages((prev) => {
@@ -156,12 +268,16 @@ export function useNeucaChat() {
                   // Retry the message
                   chatRef.current.sendMessage({ text: messageToRetry })
                     .then(() => {
-                      console.log(`✓ Auto-recovery successful after ${retryCountRef.current} attempt(s)`)
+                      chatLogger.streamComplete(Date.now() - (errorHistoryRef.current[errorHistoryRef.current.length - 1]?.timestamp || 0))
+                      // Mark error as recovered
+                      if (errorHistoryRef.current.length > 0) {
+                        errorHistoryRef.current[errorHistoryRef.current.length - 1].recovered = true
+                      }
                       retryCountRef.current = 0
                       isAutoRetryingRef.current = false
                     })
                     .catch((retryErr) => {
-                      console.error('❌ Auto-recovery attempt failed:', retryErr.message)
+                      chatLogger.streamError(retryErr, { isRetry: true })
                       isAutoRetryingRef.current = false
                     })
                 } else {
@@ -173,9 +289,9 @@ export function useNeucaChat() {
             }
           }, delay)
         } else if (!isTransient) {
-          console.log('⚠️ Non-transient error, not auto-retrying:', err.message)
+          chatLogger.streamError(err, { reason: 'non-transient', willRetry: false })
         } else if (retryCountRef.current >= 3) {
-          console.log('❌ Retry limit exhausted, showing error to user')
+          chatLogger.streamError(err, { reason: 'retry-limit-exceeded', willRetry: false })
         }
       },
     })
@@ -193,7 +309,7 @@ export function useNeucaChat() {
   useEffect(() => {
     // Detect error state transitions
     if (status === 'error' && lastStatusRef.current !== 'error' && error) {
-      console.log('🔴 Status changed to error:', error.message)
+      chatLogger.streamError(error, { source: 'status-change' })
 
       // Trigger auto-recovery if appropriate
       const isTransient =
@@ -208,7 +324,7 @@ export function useNeucaChat() {
       if (isTransient && lastUserMessageRef.current && !isAutoRetryingRef.current && retryCountRef.current < 3) {
         isAutoRetryingRef.current = true
         retryCountRef.current++
-        console.log(`🔄 Auto-recovering from error state (attempt ${retryCountRef.current}/3)...`)
+        chatLogger.retry(retryCountRef.current, 3, 'error state')
 
         const delay = 1000 + (retryCountRef.current - 1) * 500
         setTimeout(() => {
@@ -233,12 +349,12 @@ export function useNeucaChat() {
               if (chatRef.current) {
                 chatRef.current.sendMessage({ text: messageToRetry })
                   .then(() => {
-                    console.log(`✓ Error state recovery successful after ${retryCountRef.current} attempt(s)`)
+                    chatLogger.streamComplete(Date.now() - (errorHistoryRef.current[errorHistoryRef.current.length - 1]?.timestamp || 0))
                     retryCountRef.current = 0
                     isAutoRetryingRef.current = false
                   })
                   .catch((retryErr) => {
-                    console.error('❌ Error state recovery failed:', retryErr.message)
+                    chatLogger.streamError(retryErr, { source: 'error-state-recovery' })
                     isAutoRetryingRef.current = false
                   })
               } else {
@@ -258,7 +374,12 @@ export function useNeucaChat() {
       // Stream started, record time
       if (!streamStartTimeRef.current) {
         streamStartTimeRef.current = Date.now()
-        console.log('🔵 Stream started')
+        chatLogger.log({
+          timestamp: Date.now(),
+          level: 'debug',
+          event: 'stream.started',
+          context: { status },
+        })
       }
 
       // Set up timeout checker (every 2 seconds)
@@ -268,7 +389,7 @@ export function useNeucaChat() {
           const TIMEOUT_MS = 30000 // 30 second timeout
 
           if (elapsed > TIMEOUT_MS) {
-            console.error(`⏱️ Stream timeout after ${elapsed}ms - triggering auto-recovery`)
+            chatLogger.timeout(elapsed)
             clearInterval(timeoutCheckIntervalRef.current!)
             timeoutCheckIntervalRef.current = null
 
@@ -277,6 +398,7 @@ export function useNeucaChat() {
               stop() // Stop the stuck stream
               isAutoRetryingRef.current = true
               retryCountRef.current++
+              chatLogger.retry(retryCountRef.current, 3, 'timeout')
 
               setTimeout(() => {
                 const messageToRetry = lastUserMessageRef.current
@@ -296,11 +418,11 @@ export function useNeucaChat() {
                   // Retry the message
                   chatRef.current.sendMessage({ text: messageToRetry })
                     .then(() => {
-                      console.log(`✓ Timeout recovery successful after ${retryCountRef.current} attempt(s)`)
+                      chatLogger.streamComplete(Date.now() - streamStartTimeRef.current!)
                       retryCountRef.current = 0
                     })
                     .catch((retryErr) => {
-                      console.error('Timeout recovery failed:', retryErr)
+                      chatLogger.streamError(retryErr, { source: 'timeout-recovery' })
                     })
                     .finally(() => {
                       isAutoRetryingRef.current = false
@@ -321,7 +443,7 @@ export function useNeucaChat() {
       }
       if (streamStartTimeRef.current && (status === 'ready' || status === 'error')) {
         const duration = Date.now() - streamStartTimeRef.current
-        console.log(`✅ Stream completed in ${duration}ms (status: ${status})`)
+        chatLogger.streamComplete(duration)
         streamStartTimeRef.current = null
       }
     }
@@ -381,7 +503,7 @@ export function useNeucaChat() {
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           if (attempt > 0) {
-            console.log(`Auto-retrying message (attempt ${attempt + 1}/${maxRetries + 1})...`)
+            chatLogger.retry(attempt + 1, maxRetries + 1, 'auto-retry')
             // Remove the failed message(s) before retrying
             setMessages((prev) => {
               const lastMessage = prev[prev.length - 1]
@@ -404,7 +526,7 @@ export function useNeucaChat() {
           // Success! Reset retry counter and log if this was a retry
           retryCountRef.current = 0
           if (attempt > 0) {
-            console.log(`✓ Retry successful after ${attempt} attempt(s)`)
+            chatLogger.streamComplete(Date.now() - (streamStartTimeRef.current || Date.now()))
           }
           return // Success, exit retry loop
         } catch (error) {
@@ -412,18 +534,18 @@ export function useNeucaChat() {
 
           // Never retry user-initiated aborts
           if (err.name === 'AbortError') {
-            console.log('Message sending aborted by user')
+            chatLogger.streamError(err, { reason: 'user-abort', willRetry: false })
             throw err
           }
 
           // Check if this is a transient error worth retrying
           const shouldRetry = isTransientError(err)
 
-          console.error(
-            `Message send failed (attempt ${attempt + 1}/${maxRetries + 1}):`,
-            err.message,
-            shouldRetry ? '[will retry]' : '[permanent error]'
-          )
+          chatLogger.streamError(err, {
+            attempt: attempt + 1,
+            maxAttempts: maxRetries + 1,
+            willRetry: shouldRetry && attempt < maxRetries,
+          })
 
           // If it's not transient or we've exhausted retries, surface the error
           if (!shouldRetry || attempt === maxRetries) {

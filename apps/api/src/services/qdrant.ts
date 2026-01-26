@@ -1,9 +1,13 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
+import pino from 'pino';
 import type { ChunkPayload, SearchResult } from '../types.js';
 import { RAG_CONFIG } from '../config.js';
 
 const tracer = trace.getTracer('qdrant');
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+}).child({ service: 'qdrant' });
 
 const DEFAULT_QDRANT_URL = 'http://localhost:6333';
 const COLLECTION_NAME = 'transcripts';
@@ -119,7 +123,10 @@ async function expandWithNeighbors(results: SearchResult[]): Promise<SearchResul
     return results;
   }
 
-  console.log(`[qdrant] Fetching ${neighborsToFetch.length} neighboring chunks`);
+  logger.debug({
+    operation: 'qdrant.neighbors.fetch',
+    count: neighborsToFetch.length,
+  }, 'Fetching neighboring chunks');
   const neighbors = await fetchChunksByIndex(neighborsToFetch);
 
   // Merge and sort: original results first (by score), then neighbors (by chunkIndex)
@@ -153,7 +160,6 @@ export async function searchSimilar(
     expandNeighbors = RAG_CONFIG.expandWithNeighbors,
   } = options;
   const startTime = Date.now();
-  console.log(`[qdrant] Searching for "${query?.slice(0, 50) ?? 'no query'}...", title filter: ${title ?? 'none'}, limit: ${limit}, expand: ${expandNeighbors}`);
 
   return tracer.startActiveSpan('qdrant.search', async (span) => {
     try {
@@ -167,6 +173,16 @@ export async function searchSimilar(
         expand_neighbors: expandNeighbors,
       };
       span.setAttribute('input.value', JSON.stringify(inputData));
+
+      logger.debug({
+        operation: 'qdrant.search.start',
+        input: {
+          queryPreview: query?.slice(0, 50),
+          titleFilter: title ?? null,
+          limit,
+          expandNeighbors,
+        },
+      }, 'Starting Qdrant search');
 
       const filter: { must: Array<{ key: string; match: { value: string } }> } = { must: [] };
 
@@ -184,10 +200,7 @@ export async function searchSimilar(
         with_payload: true,
       });
 
-      console.log(`[qdrant] Found ${results.length} results in ${Date.now() - startTime}ms`);
-      if (results.length > 0) {
-        console.log(`[qdrant] Top result score: ${results[0].score.toFixed(4)}`);
-      }
+      const searchDurationMs = Date.now() - startTime;
 
       let finalResults = results.map((r) => ({
         payload: r.payload as unknown as ChunkPayload,
@@ -197,32 +210,38 @@ export async function searchSimilar(
       // Expand with neighbors if enabled
       if (expandNeighbors) {
         finalResults = await expandWithNeighbors(finalResults);
-        console.log(`[qdrant] Expanded to ${finalResults.length} total chunks (including neighbors)`);
       }
+
+      const totalDurationMs = Date.now() - startTime;
 
       // Output: search results with scores and content preview
       const outputData = {
         results_count: finalResults.length,
         original_count: results.length,
         expanded: expandNeighbors,
-        results: finalResults.slice(0, 5).map((r, i) => {
-          return {
-            rank: i + 1,
-            score: r.score,
-            chunk_index: r.payload.chunkIndex,
-            speaker: r.payload.speaker,
-            time_range: `${r.payload.startSec}-${r.payload.endSec}s`,
-            text_preview: r.payload.text.substring(0, 200) + (r.payload.text.length > 200 ? '...' : ''),
-          };
-        }),
+        top_score: results.length > 0 ? results[0].score : null,
+        duration_ms: totalDurationMs,
+        search_duration_ms: searchDurationMs,
       };
       span.setAttribute('output.value', JSON.stringify(outputData));
+
+      logger.info({
+        operation: 'qdrant.search.complete',
+        durationMs: totalDurationMs,
+        output: outputData,
+      }, `Search completed: ${finalResults.length} results`);
+
       span.setStatus({ code: SpanStatusCode.OK });
 
       return finalResults;
     } catch (error) {
-      console.error(`[qdrant] Search error:`, error);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error({
+        operation: 'qdrant.search.failed',
+        durationMs: Date.now() - startTime,
+        error: { message: err.message, stack: err.stack },
+      }, 'Search failed');
+      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
       throw error;
     } finally {
       span.end();

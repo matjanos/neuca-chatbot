@@ -1,7 +1,11 @@
 import { trace, SpanStatusCode } from '@opentelemetry/api';
+import pino from 'pino';
 import { PII_CONFIG } from '../config.js';
 
 const tracer = trace.getTracer('presidio');
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+}).child({ service: 'presidio' });
 
 /** Entity detected by Presidio Analyzer */
 export interface PresidioEntity {
@@ -33,11 +37,17 @@ export async function analyzePII(text: string): Promise<PIIAnalysisResult> {
   return tracer.startActiveSpan('pii.analyze', async (span) => {
     try {
       // Input: metadata only (never log actual text for privacy)
-      span.setAttribute('input.value', JSON.stringify({
+      const inputData = {
         text_length: text.length,
         language: PII_CONFIG.language,
         score_threshold: PII_CONFIG.scoreThreshold,
-      }));
+      };
+      span.setAttribute('input.value', JSON.stringify(inputData));
+
+      logger.debug({
+        operation: 'pii.analyze.start',
+        input: inputData,
+      }, 'Starting PII analysis');
 
       const response = await fetch(`${PII_CONFIG.analyzerUrl}/analyze`, {
         method: 'POST',
@@ -65,22 +75,37 @@ export async function analyzePII(text: string): Promise<PIIAnalysisResult> {
       const entityTypes = [...new Set(filteredEntities.map((e) => e.entity_type))];
 
       // Output: only entity metadata, never actual PII values
-      span.setAttribute('output.value', JSON.stringify({
+      const outputData = {
         has_pii: hasPII,
         entity_count: filteredEntities.length,
         entity_types: entityTypes,
         duration_ms: durationMs,
-      }));
+      };
+      span.setAttribute('output.value', JSON.stringify(outputData));
+
+      logger.info({
+        operation: 'pii.analyze.complete',
+        durationMs,
+        output: outputData,
+      }, hasPII ? 'PII detected' : 'No PII detected');
 
       span.setStatus({ code: SpanStatusCode.OK });
 
       return { hasPII, entities: filteredEntities, durationMs };
     } catch (error) {
-      console.error('PII analysis failed:', error);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+      const durationMs = Date.now() - startTime;
+      const err = error instanceof Error ? error : new Error(String(error));
+
+      logger.warn({
+        operation: 'pii.analyze.failed',
+        durationMs,
+        error: { message: err.message, name: err.name },
+      }, 'PII analysis failed (fail-open)');
+
+      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
 
       // Fail open - allow request to proceed if Presidio is unavailable
-      return { hasPII: false, entities: [], durationMs: Date.now() - startTime };
+      return { hasPII: false, entities: [], durationMs };
     } finally {
       span.end();
     }
