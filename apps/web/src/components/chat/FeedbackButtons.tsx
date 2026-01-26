@@ -62,7 +62,7 @@ export function FeedbackButtons({ traceId }: FeedbackButtonsProps) {
             ? 'text-green-600 bg-green-50'
             : 'text-gray-400 hover:text-green-600 hover:bg-gray-50'
         } ${feedback !== null ? 'cursor-default' : 'disabled:cursor-not-allowed'}`}
-        title="Helpful response"
+        title="Pomocna odpowiedź"
         aria-label="Thumbs up"
       >
         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -78,7 +78,7 @@ export function FeedbackButtons({ traceId }: FeedbackButtonsProps) {
             ? 'text-red-600 bg-red-50'
             : 'text-gray-400 hover:text-red-600 hover:bg-gray-50'
         } ${feedback !== null ? 'cursor-default' : 'disabled:cursor-not-allowed'}`}
-        title="Not helpful"
+        title="Niepomocna odpowiedź"
         aria-label="Thumbs down"
       >
         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
