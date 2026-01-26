@@ -15,6 +15,8 @@ interface MessageListProps {
   onRetry?: () => void
   onDismissError?: () => void
   videoId?: string | null
+  messageTraceIds?: Record<string, string>
+  status?: string
 }
 
 // Helper to check if message has visible content (text or non-empty reasoning)
@@ -44,8 +46,15 @@ export function MessageList({
   onRetry,
   onDismissError,
   videoId,
+  messageTraceIds,
+  status,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Determine which message is currently streaming (if any)
+  const streamingMessageId = (status === 'streaming' || status === 'submitted') && messages.length > 0
+    ? messages[messages.length - 1]?.id
+    : null
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -67,7 +76,13 @@ export function MessageList({
     <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
       <div className="max-w-3xl mx-auto space-y-3">
         {visibleMessages.map((message) => (
-          <Message key={message.id} message={message} videoId={videoId} />
+          <Message
+            key={message.id}
+            message={message}
+            videoId={videoId}
+            traceId={message.role === 'assistant' ? messageTraceIds?.[message.id] : undefined}
+            isStreaming={message.id === streamingMessageId}
+          />
         ))}
 
         {showTypingIndicator && (

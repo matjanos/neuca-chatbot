@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export function useNeucaChat() {
   const [input, setInput] = useState('')
   const [videoId, setVideoId] = useState<string | null>(null)
+  const [messageTraceIds, setMessageTraceIds] = useState<Record<string, string>>({})
+  const [pendingTraceId, setPendingTraceId] = useState<string | null>(null)
   const lastUserMessageRef = useRef<string>('')
 
   // Create custom fetch that captures video ID from response headers
@@ -56,6 +58,12 @@ export function useNeucaChat() {
         const vid = response.headers.get('X-Video-Id')
         if (vid) {
           setVideoId(vid)
+        }
+
+        // Extract trace ID for feedback
+        const tid = response.headers.get('X-Trace-Id')
+        if (tid) {
+          setPendingTraceId(tid)
         }
 
         return response
@@ -179,7 +187,7 @@ export function useNeucaChat() {
 
   // Monitor for stuck streams (timeout detection) and error states
   const streamStartTimeRef = useRef<number | null>(null)
-  const timeoutCheckIntervalRef = useRef<number | null>(null)
+  const timeoutCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastStatusRef = useRef<typeof status>(status)
 
   useEffect(() => {
@@ -324,6 +332,20 @@ export function useNeucaChat() {
       }
     }
   }, [status, stop, setMessages, error, clearError])
+
+  // Associate trace IDs with assistant messages
+  useEffect(() => {
+    if (pendingTraceId && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1]
+      if (lastMessage.role === 'assistant' && !messageTraceIds[lastMessage.id]) {
+        setMessageTraceIds(prev => ({
+          ...prev,
+          [lastMessage.id]: pendingTraceId
+        }))
+        setPendingTraceId(null)
+      }
+    }
+  }, [messages, pendingTraceId, messageTraceIds])
 
   const sendMessage = useCallback(
     async (content: string, isAutoRetry = false) => {
@@ -472,5 +494,6 @@ export function useNeucaChat() {
     retry,
     clearError,
     videoId,
+    messageTraceIds,
   }
 }

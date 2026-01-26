@@ -2,10 +2,13 @@ import { useState } from 'react'
 import type { UIMessage } from '@ai-sdk/react'
 import { ParsedMessageText } from './ParsedMessageText'
 import { VideoModal } from '../video/VideoModal'
+import { FeedbackButtons } from './FeedbackButtons'
 
 interface MessageProps {
   message: UIMessage
   videoId?: string | null
+  traceId?: string
+  isStreaming?: boolean
 }
 
 function ReasoningBlock({ reasoning }: { reasoning: string }) {
@@ -101,7 +104,7 @@ function getToolName(part: unknown): string | null {
   return null
 }
 
-export function Message({ message, videoId }: MessageProps) {
+export function Message({ message, videoId, traceId, isStreaming = false }: MessageProps) {
   const isUser = message.role === 'user'
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedTimestamp, setSelectedTimestamp] = useState(0)
@@ -166,6 +169,9 @@ export function Message({ message, videoId }: MessageProps) {
           `}
         >
           {renderParts()}
+          {message.role === 'assistant' && traceId && !isStreaming && (
+            <FeedbackButtons messageId={message.id} traceId={traceId} />
+          )}
         </div>
       </div>
 

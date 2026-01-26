@@ -20,7 +20,7 @@ const app = new Hono();
 app.use('*', cors({
   origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
   credentials: true,
-  exposeHeaders: ['X-Video-Id'], // Expose custom headers so frontend can read them
+  exposeHeaders: ['X-Video-Id', 'X-Trace-Id'], // Expose custom headers so frontend can read them
 }));
 
 // Health check endpoint
@@ -75,6 +75,10 @@ app.post('/api/chat', async (c) => {
   console.log(`[${requestId}] === Chat request started ===`);
 
   return tracer.startActiveSpan('chat.request', async (span) => {
+    // Extract trace ID from active span
+    const spanContext = span.spanContext();
+    const traceId = spanContext.traceId;
+
     try {
       const body = await c.req.json();
       const { messages, lectureTitle }: { messages: ChatMessage[]; lectureTitle?: string } = body;
@@ -272,6 +276,11 @@ app.post('/api/chat', async (c) => {
       // Add video context header for timestamp linking
       if (ragContext.videoId) {
         response.headers.set('X-Video-Id', ragContext.videoId);
+      }
+
+      // Add trace ID for feedback collection
+      if (traceId) {
+        response.headers.set('X-Trace-Id', traceId);
       }
 
       // Ensure proper streaming headers

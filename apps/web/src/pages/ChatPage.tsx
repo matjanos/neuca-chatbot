@@ -24,6 +24,7 @@ export function ChatPage() {
     retry,
     clearError,
     videoId,
+    messageTraceIds,
   } = useNeucaChat()
 
   // Send initial message only once
@@ -54,6 +55,7 @@ export function ChatPage() {
         retry={retry}
         clearError={clearError}
         videoId={videoId}
+        messageTraceIds={messageTraceIds}
       />
     </Layout>
   )
