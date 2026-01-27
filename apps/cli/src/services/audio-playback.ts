@@ -103,6 +103,34 @@ export async function playAudio(audioPath: string): Promise<void> {
 }
 
 /**
+ * Play an audio file in the background (non-blocking).
+ * Returns immediately so the CLI can continue showing prompts.
+ * Use stopPlayback() to stop when needed.
+ */
+export function playAudioInBackground(audioPath: string): void {
+  // Stop any currently playing audio
+  stopPlayback();
+
+  if (!existsSync(audioPath)) {
+    throw new Error(`Audio file not found: ${audioPath}`);
+  }
+
+  const proc = spawn(['afplay', audioPath], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  currentPlaybackProcess = proc;
+
+  // Clean up reference when playback finishes naturally,
+  // but only if no new process has replaced it since
+  proc.exited.then(() => {
+    if (currentPlaybackProcess === proc) {
+      currentPlaybackProcess = null;
+    }
+  });
+}
+
+/**
  * Extract and play a segment from the source audio
  */
 export async function playSegment(
@@ -113,6 +141,20 @@ export async function playSegment(
 ): Promise<void> {
   const segmentPath = await extractAudioSegment(sourcePath, startMs, endMs, sampleId);
   await playAudio(segmentPath);
+}
+
+/**
+ * Extract and play a segment in the background (non-blocking).
+ * The segment is extracted (awaited), then playback starts without blocking.
+ */
+export async function playSegmentInBackground(
+  sourcePath: string,
+  startMs: number,
+  endMs: number,
+  sampleId: string
+): Promise<void> {
+  const segmentPath = await extractAudioSegment(sourcePath, startMs, endMs, sampleId);
+  playAudioInBackground(segmentPath);
 }
 
 /**

@@ -1,6 +1,7 @@
 import {
   spinner,
   select,
+  selectKey,
   text,
   confirm,
   isCancel,
@@ -16,7 +17,7 @@ import { fileURLToPath } from 'url';
 import type { SpeakerInfo, AudioSample } from '../types.js';
 import { analyzeSpeakers, selectSamplesForSpeaker, formatSpeakerDuration } from '../services/speaker-analyzer.js';
 import {
-  playSegment,
+  playSegmentInBackground,
   stopPlayback,
   cleanupSegmentFiles,
   checkFFmpegAvailable,
@@ -214,33 +215,30 @@ export async function identifySpeakersCommand(
         log.info(`  Sample ${currentSampleIndex + 1}/${samples.length}: ${formatTime(sample.start)} - ${formatTime(sample.end)}`);
         log.info(pc.dim(`  "${sample.text.substring(0, 100)}${sample.text.length > 100 ? '...' : ''}"`));
 
-        // Play the sample
+        // Play the sample in the background so the prompt appears immediately
         try {
           const sampleId = `${speaker.normalizedLabel}-${currentSampleIndex}`;
-          await playSegment(audioPath, sample.start, sample.end, sampleId);
+          await playSegmentInBackground(audioPath, sample.start, sample.end, sampleId);
         } catch (error) {
           log.warn(`Could not play audio sample: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
 
-        // Ask what to do next
-        const action = await select({
-          message: `What would you like to do for Speaker ${speaker.normalizedLabel}?`,
+        // Ask what to do next (shown while audio plays)
+        const action = await selectKey({
+          message: `Speaker ${speaker.normalizedLabel}:`,
           options: [
-            { value: 'name', label: 'Enter name for this speaker' },
-            { value: 'replay', label: 'Replay this sample' },
-            ...(currentSampleIndex > 0 ? [{ value: 'prev', label: 'Play previous sample' }] : []),
-            ...(currentSampleIndex < samples.length - 1 ? [{ value: 'next', label: 'Play next sample' }] : []),
-            { value: 'back', label: 'Back to speaker list' },
+            { value: 'enter-name', label: `${pc.bold('e')} Enter name` },
+            { value: 'replay', label: `${pc.bold('r')} Replay sample` },
+            ...(currentSampleIndex > 0 ? [{ value: 'prev', label: `${pc.bold('p')} Previous sample` }] : []),
+            ...(currentSampleIndex < samples.length - 1 ? [{ value: 'next', label: `${pc.bold('n')} Next sample` }] : []),
+            { value: 'back', label: `${pc.bold('b')} Back to speaker list` },
           ],
         });
 
-        if (isCancel(action)) {
-          cleanupSegmentFiles();
-          cancel('Operation cancelled');
-          return null;
-        }
+        // Stop any playing audio when user makes a selection
+        stopPlayback();
 
-        if (action === 'back') {
+        if (isCancel(action) || action === 'back') {
           break;
         }
 
@@ -258,7 +256,7 @@ export async function identifySpeakersCommand(
           continue;
         }
 
-        if (action === 'name') {
+        if (action === 'enter-name') {
           const name = await text({
             message: `Enter name for Speaker ${speaker.normalizedLabel}:`,
             placeholder: 'e.g., John Smith, Host, Guest',
