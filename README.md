@@ -1,5 +1,9 @@
 # Neuca Chatbot
 
+<div align="center">
+  <img src="assets/clippy_0.png" alt="Neuca Chatbot Mascot" width="300" />
+</div>
+
 A YouTube transcription and RAG-powered chatbot system built with Bun workspaces.
 
 ## Features
