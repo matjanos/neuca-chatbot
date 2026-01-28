@@ -214,6 +214,7 @@ bun run --cwd apps/cli tsc --noEmit
 
 ## Documentation
 
+- [Project Presentation](./assets/deck.pdf) - Overview presentation about the project
 - [CLAUDE.md](./CLAUDE.md) - Development guidance and architecture overview
 - [TECHNICAL_LOG.md](./TECHNICAL_LOG.md) - Architecture decisions and debugging notes
 - [WHISPER_SETUP.md](./WHISPER_SETUP.md) - Local Whisper GPU acceleration guide
