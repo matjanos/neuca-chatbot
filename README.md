@@ -53,7 +53,7 @@ For local Whisper transcription:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/neuca-chatbot.git
+git clone https://github.com/matjanos/neuca-chatbot.git
 cd neuca-chatbot
 
 # Install dependencies
@@ -83,6 +83,11 @@ PORT=3000
 
 # PII Detection
 PRESIDIO_ANALYZER_URL=http://localhost:5002
+
+# Optional: Telemetry with Langfuse
+LANGFUSE_PUBLIC_KEY=your_public_key
+LANGFUSE_SECRET_KEY=your_secret_key
+LANGFUSE_HOST=https://cloud.langfuse.com
 ```
 
 ## Usage
@@ -215,10 +220,11 @@ bun run --cwd apps/cli tsc --noEmit
 ## Documentation
 
 - [Project Presentation](./assets/deck.pdf) - Overview presentation about the project
+- [EXECUTIVE_SUMMARY.md](./EXECUTIVE_SUMMARY.md) - Executive summary and project overview
+- [PRESENTATION_GUIDE.md](./PRESENTATION_GUIDE.md) - Guide for presenting the project
+- [DIAGRAMS.md](./DIAGRAMS.md) - System architecture diagrams and visualizations
 - [CLAUDE.md](./CLAUDE.md) - Development guidance and architecture overview
 - [TECHNICAL_LOG.md](./TECHNICAL_LOG.md) - Architecture decisions and debugging notes
-- [WHISPER_SETUP.md](./WHISPER_SETUP.md) - Local Whisper GPU acceleration guide
-- [DIARIZATION_SETUP.md](./DIARIZATION_SETUP.md) - Hugging Face token setup for speaker diarization
 
 ## License
 
